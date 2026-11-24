@@ -690,10 +690,11 @@ impl CommitAdapter {
             match operation {
                 FrameworkOperation::SetText { id, text } => {
                     let handle = self.elements[id];
-                    ui.set_text(handle, text.clone()).map_err(|error| match error {
-                        UiError::NotText(_) => FrameworkError::NotText(*id),
-                        other => FrameworkError::Ui(other),
-                    })?;
+                    ui.set_text(handle, text.clone())
+                        .map_err(|error| match error {
+                            UiError::NotText(_) => FrameworkError::NotText(*id),
+                            other => FrameworkError::Ui(other),
+                        })?;
                 }
                 FrameworkOperation::SetProperty { id, key, value } => {
                     ui.set_property(self.elements[id], key.clone(), value.clone())?;
@@ -1110,9 +1111,7 @@ impl FrameworkAdapter for CommitAdapter {
             if structural_batch && self.apply_global_structural_batch(&commit, ui)? {
                 return Ok(());
             }
-            if !structural_batch
-                && self.apply_mixed_independent_structural_batch(&commit, ui)?
-            {
+            if !structural_batch && self.apply_mixed_independent_structural_batch(&commit, ui)? {
                 return Ok(());
             }
             let mut operations = commit.operations.into_iter().peekable();
@@ -2176,11 +2175,24 @@ mod initial_snapshot_tests {
         let first = adapter.native_element(FrameworkElementId(1)).unwrap();
         let second = adapter.native_element(FrameworkElementId(2)).unwrap();
         let root = adapter.native_element(FrameworkElementId(100)).unwrap();
-        assert_eq!(ui.element(root).unwrap().properties.get("data-phase").map(String::as_str), Some("ready"));
+        assert_eq!(
+            ui.element(root)
+                .unwrap()
+                .properties
+                .get("data-phase")
+                .map(String::as_str),
+            Some("ready")
+        );
         assert_eq!(ui.logical_parent(first), Some(root));
         assert_eq!(ui.logical_parent(second), Some(root));
-        assert_eq!(ui.deque_handle_for_element(first), adapter.native_deque(FrameworkDequeId(4)));
-        assert_eq!(ui.deque_handle_for_element(second), adapter.native_deque(FrameworkDequeId(5)));
+        assert_eq!(
+            ui.deque_handle_for_element(first),
+            adapter.native_deque(FrameworkDequeId(4))
+        );
+        assert_eq!(
+            ui.deque_handle_for_element(second),
+            adapter.native_deque(FrameworkDequeId(5))
+        );
     }
 
     #[test]
@@ -2225,8 +2237,17 @@ mod initial_snapshot_tests {
         adapter.apply_commit(commit, &mut ui).unwrap();
 
         let moved = adapter.native_element(FrameworkElementId(2)).unwrap();
-        assert_eq!(ui.element(moved).unwrap().properties.get("data-state").map(String::as_str), Some("moved"));
-        assert_eq!(ui.deque_handle_for_element(moved), adapter.native_deque(FrameworkDequeId(2)));
+        assert_eq!(
+            ui.element(moved)
+                .unwrap()
+                .properties
+                .get("data-state")
+                .map(String::as_str),
+            Some("moved")
+        );
+        assert_eq!(
+            ui.deque_handle_for_element(moved),
+            adapter.native_deque(FrameworkDequeId(2))
+        );
     }
-
 }
