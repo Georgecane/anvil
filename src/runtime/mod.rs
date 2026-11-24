@@ -5,6 +5,7 @@ mod host;
 mod renderer;
 mod style;
 mod stylo;
+mod layout;
 mod text;
 mod ui;
 mod window;
@@ -23,6 +24,7 @@ pub use style::{
     run_style_pass,
 };
 pub use stylo::{StyloError, StyloStyleEngine};
+pub use layout::{LayoutNodeId, TaffyTreeProjection};
 pub use ui::{
     DequeHandle, ElementHandle, InitialDeque, InitialElement, LogicalProjection, UiElement,
     UiElementKind, UiError, UiModel,

@@ -26,6 +26,7 @@ static_prefs = { package = "stylo_static_prefs", version = "0.24.0" }
 app_units = "0.7.8"
 euclid = "0.22.14"
 url = "2.5.9"
+taffy = { version = "0.16.0", default-features = false, features = ["std", "flexbox", "grid", "block_layout", "float_layout", "calc", "content_size"] }
 
 [dev-dependencies]
 
