@@ -114,6 +114,10 @@ The framework boundary is designed around a one-time initial snapshot followed b
 
 This is an integration interface, not a statement that React, Vue, Svelte, or other framework adapters are already included in this repository.
 
+## Performance benchmarks
+
+See BENCHMARKS.md for the local performance and memory baselines, methodology, and commands for running the benchmark harnesses.
+
 ## License
 
 Anvil is distributed under the **GNU General Public License v3.0 only (GPL-3.0-only)**. See [`LICENSE`](LICENSE) for the complete license text.

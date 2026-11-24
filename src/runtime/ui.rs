@@ -416,6 +416,15 @@ impl UiModel {
         (parent, siblings)
     }
 
+    /// Non-structural changes need the parent identity, not a sibling snapshot.
+    /// Insert, remove, and move operations continue to capture sibling context.
+    fn mutation_parent_context(
+        &self,
+        handle: ElementHandle,
+    ) -> (Option<ElementHandle>, Vec<ElementHandle>) {
+        (self.logical_parent(handle), Vec::new())
+    }
+
     fn root_element_handles(&self) -> Vec<ElementHandle> {
         let Some(node_id) = self
             .root_handle
@@ -664,7 +673,7 @@ impl UiModel {
             return Ok(());
         }
         element.text_content = Some(text);
-        let context = self.mutation_context(handle);
+        let context = self.mutation_parent_context(handle);
         self.record_mutation(
             UiMutationKind::Text,
             Some(handle),
@@ -695,7 +704,7 @@ impl UiModel {
             return Ok(());
         }
         element.properties.insert(key, value);
-        let context = self.mutation_context(handle);
+        let context = self.mutation_parent_context(handle);
         self.record_mutation(
             UiMutationKind::Attribute,
             Some(handle),
@@ -719,7 +728,7 @@ impl UiModel {
             .properties
             .remove(&key);
         if removed.is_some() {
-            let context = self.mutation_context(handle);
+            let context = self.mutation_parent_context(handle);
             self.record_mutation(
                 UiMutationKind::Attribute,
                 Some(handle),
@@ -751,7 +760,7 @@ impl UiModel {
             return Ok(());
         }
         element.styles.insert(key, value);
-        let context = self.mutation_context(handle);
+        let context = self.mutation_parent_context(handle);
         self.record_mutation(
             UiMutationKind::InlineStyle,
             Some(handle),
@@ -775,7 +784,7 @@ impl UiModel {
             .styles
             .remove(&key);
         if removed.is_some() {
-            let context = self.mutation_context(handle);
+            let context = self.mutation_parent_context(handle);
             self.record_mutation(
                 UiMutationKind::InlineStyle,
                 Some(handle),
@@ -1276,6 +1285,45 @@ mod bootstrap_tests {
         assert_eq!(ui.registry().len(), 3);
         assert_eq!(ui.root_handle(), Some(DequeHandle(100)));
         assert_eq!(ui.element(ElementHandle(5)).unwrap().tag, "d");
+    }
+}
+
+#[cfg(test)]
+mod non_structural_mutation_context_tests {
+    use super::*;
+
+    #[test]
+    fn attribute_mutations_record_parent_without_materializing_sibling_snapshots() {
+        let mut ui = UiModel::from_initial_groups(vec![InitialDeque {
+            handle: DequeHandle(8_001),
+            elements: vec![
+                InitialElement {
+                    handle: ElementHandle(8_101),
+                    element: UiElement::new("span"),
+                    subtree_span: 1,
+                },
+                InitialElement {
+                    handle: ElementHandle(8_102),
+                    element: UiElement::new("span"),
+                    subtree_span: 1,
+                },
+                InitialElement {
+                    handle: ElementHandle(8_103),
+                    element: UiElement::new("main"),
+                    subtree_span: 3,
+                },
+            ],
+        }])
+        .unwrap();
+
+        let target = ElementHandle(8_101);
+        let parent = ElementHandle(8_103);
+        ui.set_property(target, "class", "active").unwrap();
+
+        let mutation = ui.mutation_journal.back().unwrap();
+        assert_eq!(mutation.new_parent, Some(parent));
+        assert!(mutation.old_siblings.is_empty());
+        assert!(mutation.new_siblings.is_empty());
     }
 }
 

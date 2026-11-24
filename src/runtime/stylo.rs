@@ -364,7 +364,7 @@ fn parent_first_dirty_order(
     ordered
 }
 
-fn mark_parent_context(
+fn mark_parent_context_all(
     projection: &LogicalProjection<'_>,
     parent: Option<ElementHandle>,
     dirty: &mut HashSet<ElementHandle>,
@@ -374,6 +374,64 @@ fn mark_parent_context(
         dirty.insert(parent);
         dirty.extend(projection.children_of(parent));
         ancestor = projection.parent_of(parent);
+    }
+}
+
+fn selector_flags(
+    states: &HashMap<ElementHandle, Rc<StyloElementState>>,
+    handle: ElementHandle,
+) -> ElementSelectorFlags {
+    states
+        .get(&handle)
+        .map_or_else(ElementSelectorFlags::empty, |state| {
+            state.selector_flags.get()
+        })
+}
+
+fn mark_sibling_context(
+    projection: &LogicalProjection<'_>,
+    handle: ElementHandle,
+    dirty: &mut HashSet<ElementHandle>,
+) {
+    if let Some(parent) = projection.parent_of(handle) {
+        dirty.extend(projection.children_of(parent));
+    } else {
+        dirty.extend(projection.root_elements());
+    }
+}
+
+/// Non-structural mutations only expand into sibling subtrees when Stylo's
+/// selector matching recorded a dependency that can cross sibling boundaries.
+/// Ancestors are always dirtied so :has() and inherited values remain correct.
+fn mark_parent_context_incremental(
+    projection: &LogicalProjection<'_>,
+    parent: Option<ElementHandle>,
+    changed: Option<ElementHandle>,
+    states: &HashMap<ElementHandle, Rc<StyloElementState>>,
+    dirty: &mut HashSet<ElementHandle>,
+) {
+    let sibling_search_flags = ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_SIBLING
+        | ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR_SIBLING;
+    let sibling_dependency_flags = ElementSelectorFlags::HAS_SLOW_SELECTOR_LATER_SIBLINGS
+        | ElementSelectorFlags::HAS_SLOW_SELECTOR_NTH_OF;
+
+    if let Some(changed) = changed
+        && selector_flags(states, changed).intersects(sibling_search_flags)
+    {
+        mark_sibling_context(projection, changed, dirty);
+    }
+
+    let mut ancestor = parent;
+    while let Some(current) = ancestor {
+        dirty.insert(current);
+        let flags = selector_flags(states, current);
+        if flags.intersects(sibling_dependency_flags) {
+            dirty.extend(projection.children_of(current));
+        }
+        if flags.intersects(sibling_search_flags) {
+            mark_sibling_context(projection, current, dirty);
+        }
+        ancestor = projection.parent_of(current);
     }
 }
 
@@ -453,6 +511,7 @@ fn collect_invalidated<'mutation>(
     projection: &LogicalProjection<'_>,
     mutations: impl Iterator<Item = &'mutation UiMutation>,
     suppress_dirty_expansion: bool,
+    states: &HashMap<ElementHandle, Rc<StyloElementState>>,
 ) -> InvalidationBatch {
     let mut batch = InvalidationBatch {
         dirty: HashSet::new(),
@@ -469,7 +528,7 @@ fn collect_invalidated<'mutation>(
         hash_changed_deques.extend(mutation.hash_changed_deques.iter().copied());
 
         match mutation.kind {
-            UiMutationKind::Text | UiMutationKind::Attribute | UiMutationKind::InlineStyle => {
+            UiMutationKind::Text | UiMutationKind::Attribute => {
                 if let Some(handle) = mutation.element
                     && !suppress_dirty_expansion
                 {
@@ -477,7 +536,21 @@ fn collect_invalidated<'mutation>(
                     mark_subtree(projection, handle, &mut batch.dirty);
                 }
                 if !suppress_dirty_expansion {
-                    mark_parent_context(projection, mutation.new_parent, &mut batch.dirty);
+                    mark_parent_context_incremental(
+                        projection,
+                        mutation.new_parent,
+                        mutation.element,
+                        states,
+                        &mut batch.dirty,
+                    );
+                }
+            }
+            UiMutationKind::InlineStyle => {
+                if let Some(handle) = mutation.element
+                    && !suppress_dirty_expansion
+                {
+                    batch.refresh_states.insert(handle);
+                    mark_subtree(projection, handle, &mut batch.dirty);
                 }
             }
             UiMutationKind::Insert => {
@@ -488,7 +561,7 @@ fn collect_invalidated<'mutation>(
                     }
                 }
                 if !suppress_dirty_expansion {
-                    mark_parent_context(projection, mutation.new_parent, &mut batch.dirty);
+                    mark_parent_context_all(projection, mutation.new_parent, &mut batch.dirty);
                 }
             }
             UiMutationKind::Remove => {
@@ -496,7 +569,7 @@ fn collect_invalidated<'mutation>(
                     .removed_states
                     .extend(mutation.affected.iter().copied());
                 if !suppress_dirty_expansion {
-                    mark_parent_context(projection, mutation.old_parent, &mut batch.dirty);
+                    mark_parent_context_all(projection, mutation.old_parent, &mut batch.dirty);
                     mark_old_sibling_context(projection, &mutation.old_siblings, &mut batch.dirty);
                 }
             }
@@ -505,9 +578,9 @@ fn collect_invalidated<'mutation>(
                     for handle in &mutation.affected {
                         mark_subtree(projection, *handle, &mut batch.dirty);
                     }
-                    mark_parent_context(projection, mutation.old_parent, &mut batch.dirty);
+                    mark_parent_context_all(projection, mutation.old_parent, &mut batch.dirty);
                     mark_old_sibling_context(projection, &mutation.old_siblings, &mut batch.dirty);
-                    mark_parent_context(projection, mutation.new_parent, &mut batch.dirty);
+                    mark_parent_context_all(projection, mutation.new_parent, &mut batch.dirty);
                     mark_old_sibling_context(projection, &mutation.new_siblings, &mut batch.dirty);
                 }
             }
@@ -949,9 +1022,27 @@ impl SelectorsElement for StyloNode<'_> {
         if flags.is_empty() {
             return;
         }
-        if let Some(state) = self.document().state(handle) {
-            state.selector_flags.set(state.selector_flags.get() | flags);
-            self.document().flagged_nodes.borrow_mut().insert(handle);
+
+        let document = self.document();
+        let self_flags = flags.for_self();
+        if !self_flags.is_empty()
+            && let Some(state) = document.state(handle)
+        {
+            state
+                .selector_flags
+                .set(state.selector_flags.get() | self_flags);
+            document.flagged_nodes.borrow_mut().insert(handle);
+        }
+
+        let parent_flags = flags.for_parent();
+        if !parent_flags.is_empty()
+            && let Some(parent) = document.projection.parent_of(handle)
+            && let Some(state) = document.state(parent)
+        {
+            state
+                .selector_flags
+                .set(state.selector_flags.get() | parent_flags);
+            document.flagged_nodes.borrow_mut().insert(parent);
         }
     }
 
@@ -1511,6 +1602,12 @@ impl CssStyleEngine for StyloStyleEngine {
             work.restart(projection);
         }
         let global_recalculation_active = self.stylesheet_work.is_some();
+        let mut invalidation = collect_invalidated(
+            projection,
+            mutations,
+            global_recalculation_active,
+            &self.element_states,
+        );
         self.last_selector_flag_reset_count = 0;
         while self.last_selector_flag_reset_count < StylesheetWork::ELEMENT_BUDGET {
             let Some(handle) = self.selector_flagged.iter().next().copied() else {
@@ -1522,8 +1619,6 @@ impl CssStyleEngine for StyloStyleEngine {
                 self.last_selector_flag_reset_count += 1;
             }
         }
-        let mut invalidation =
-            collect_invalidated(projection, mutations, global_recalculation_active);
         if let Some(work) = self.stylesheet_work.as_mut() {
             invalidation.dirty.extend(work.next_batch(projection));
         }
@@ -2122,6 +2217,52 @@ mod tests {
         assert!(stylo.last_selector_flag_reset_count() > 0);
         assert!(stylo.last_selector_flag_reset_count() <= 2);
         assert_eq!(style_value(&ui, parent, "color"), "rgb(255, 0, 0)");
+    }
+
+    #[test]
+    fn attribute_mutation_without_sibling_dependencies_does_not_recompute_siblings() {
+        let mut ui = UiModel::new();
+        let root = ui.create_root_deque().unwrap();
+        let parent = ui.create_element(root, "main", End::Back).unwrap();
+        let first = ui.create_element(root, "span", End::Front).unwrap();
+        let second = ui.create_element(root, "span", End::Front).unwrap();
+        let third = ui.create_element(root, "span", End::Front).unwrap();
+
+        let mut stylo = StyloStyleEngine::new().unwrap();
+        stylo.add_stylesheet(".active { color: red; }");
+        run_style_pass(&mut stylo, &mut StyleCommitAdapter, &mut ui).unwrap();
+
+        ui.set_property(first, "class", "active").unwrap();
+        run_style_pass(&mut stylo, &mut StyleCommitAdapter, &mut ui).unwrap();
+
+        assert_eq!(style_value(&ui, first, "color"), "rgb(255, 0, 0)");
+        assert_eq!(stylo.last_recomputed_count(), 2);
+        assert!(ui.element(parent).is_some());
+        assert!(ui.element(second).is_some());
+        assert!(ui.element(third).is_some());
+    }
+
+    #[test]
+    fn relative_sibling_has_dependency_invalidates_the_anchor() {
+        let mut ui = UiModel::new();
+        let root = ui.create_root_deque().unwrap();
+        let parent = ui.create_element(root, "main", End::Back).unwrap();
+        let anchor = ui.create_element(root, "span", End::Front).unwrap();
+        let target = ui.create_element(root, "span", End::Front).unwrap();
+        ui.set_property(anchor, "class", "anchor").unwrap();
+        ui.set_property(target, "class", "idle").unwrap();
+
+        let mut stylo = StyloStyleEngine::new().unwrap();
+        stylo.add_stylesheet("main > .anchor:has(+ .active) { color: red; }");
+        run_style_pass(&mut stylo, &mut StyleCommitAdapter, &mut ui).unwrap();
+        assert_eq!(style_value(&ui, anchor, "color"), "rgb(0, 0, 0)");
+
+        ui.set_property(target, "class", "active").unwrap();
+        run_style_pass(&mut stylo, &mut StyleCommitAdapter, &mut ui).unwrap();
+
+        assert_eq!(style_value(&ui, anchor, "color"), "rgb(255, 0, 0)");
+        assert!(stylo.last_recomputed_count() >= 2);
+        assert!(ui.element(parent).is_some());
     }
 
     #[test]
