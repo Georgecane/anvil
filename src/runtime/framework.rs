@@ -2136,7 +2136,7 @@ mod initial_snapshot_tests {
         commit.push(FrameworkOperation::MoveSubtree {
             anchor: FrameworkElementId(1),
             target: FrameworkDequeId(1),
-            target_end: End::Back,
+            target_end: End::Front,
         });
         commit.push(FrameworkOperation::SetProperty {
             id: FrameworkElementId(100),
