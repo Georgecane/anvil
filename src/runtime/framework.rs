@@ -2176,7 +2176,7 @@ mod initial_snapshot_tests {
         let first = adapter.native_element(FrameworkElementId(1)).unwrap();
         let second = adapter.native_element(FrameworkElementId(2)).unwrap();
         let root = adapter.native_element(FrameworkElementId(100)).unwrap();
-        assert_eq!(ui.element(root).unwrap().get_property("data-phase"), Some("ready"));
+        assert_eq!(ui.element(root).unwrap().properties.get("data-phase").map(String::as_str), Some("ready"));
         assert_eq!(ui.logical_parent(first), Some(root));
         assert_eq!(ui.logical_parent(second), Some(root));
         assert_eq!(ui.deque_handle_for_element(first), adapter.native_deque(FrameworkDequeId(4)));
@@ -2225,7 +2225,7 @@ mod initial_snapshot_tests {
         adapter.apply_commit(commit, &mut ui).unwrap();
 
         let moved = adapter.native_element(FrameworkElementId(2)).unwrap();
-        assert_eq!(ui.element(moved).unwrap().get_property("data-state"), Some("moved"));
+        assert_eq!(ui.element(moved).unwrap().properties.get("data-state").map(String::as_str), Some("moved"));
         assert_eq!(ui.deque_handle_for_element(moved), adapter.native_deque(FrameworkDequeId(2)));
     }
 
