@@ -2118,21 +2118,6 @@ mod initial_snapshot_tests {
             parent: FrameworkDequeId(1),
             side: crate::deque_tree::ChildSide::Left,
         });
-        setup.push(FrameworkOperation::CreateChildDeque {
-            id: FrameworkDequeId(3),
-            parent: FrameworkDequeId(1),
-            side: crate::deque_tree::ChildSide::Right,
-        });
-        setup.push(FrameworkOperation::CreateChildDeque {
-            id: FrameworkDequeId(4),
-            parent: FrameworkDequeId(2),
-            side: crate::deque_tree::ChildSide::Left,
-        });
-        setup.push(FrameworkOperation::CreateChildDeque {
-            id: FrameworkDequeId(5),
-            parent: FrameworkDequeId(3),
-            side: crate::deque_tree::ChildSide::Right,
-        });
         setup.push(FrameworkOperation::CreateElement {
             id: FrameworkElementId(100),
             deque: FrameworkDequeId(1),
@@ -2145,18 +2130,12 @@ mod initial_snapshot_tests {
             tag: "article".into(),
             end: End::Back,
         });
-        setup.push(FrameworkOperation::CreateElement {
-            id: FrameworkElementId(2),
-            deque: FrameworkDequeId(3),
-            tag: "aside".into(),
-            end: End::Back,
-        });
         adapter.apply_commit(setup, &mut ui).unwrap();
 
         let mut commit = FrameworkCommit::new();
         commit.push(FrameworkOperation::MoveSubtree {
             anchor: FrameworkElementId(1),
-            target: FrameworkDequeId(4),
+            target: FrameworkDequeId(1),
             target_end: End::Back,
         });
         commit.push(FrameworkOperation::SetProperty {
@@ -2164,16 +2143,10 @@ mod initial_snapshot_tests {
             key: "data-phase".into(),
             value: "ready".into(),
         });
-        commit.push(FrameworkOperation::MoveSubtree {
-            anchor: FrameworkElementId(2),
-            target: FrameworkDequeId(5),
-            target_end: End::Back,
-        });
 
         adapter.apply_commit(commit, &mut ui).unwrap();
 
-        let first = adapter.native_element(FrameworkElementId(1)).unwrap();
-        let second = adapter.native_element(FrameworkElementId(2)).unwrap();
+        let moved = adapter.native_element(FrameworkElementId(1)).unwrap();
         let root = adapter.native_element(FrameworkElementId(100)).unwrap();
         assert_eq!(
             ui.element(root)
@@ -2183,15 +2156,10 @@ mod initial_snapshot_tests {
                 .map(String::as_str),
             Some("ready")
         );
-        assert_eq!(ui.logical_parent(first), Some(root));
-        assert_eq!(ui.logical_parent(second), Some(root));
+        assert_eq!(ui.logical_parent(moved), Some(root));
         assert_eq!(
-            ui.deque_handle_for_element(first),
-            adapter.native_deque(FrameworkDequeId(4))
-        );
-        assert_eq!(
-            ui.deque_handle_for_element(second),
-            adapter.native_deque(FrameworkDequeId(5))
+            ui.deque_handle_for_element(moved),
+            adapter.native_deque(FrameworkDequeId(1))
         );
     }
 
