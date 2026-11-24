@@ -485,7 +485,7 @@ impl UiModel {
         }
         let changed = self
             .registry
-            .detect_changes_for(&mut self.tree, candidates.into_iter());
+            .detect_changes_for(&mut self.tree, candidates);
         for deque_id in changed {
             if let Some(mutation) = self
                 .mutation_journal
