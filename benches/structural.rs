@@ -215,6 +215,75 @@ fn make_structural_commit_fixture(
     (ui, adapter, commit)
 }
 
+fn make_multi_source_structural_fixture(
+    sibling_count: usize,
+    batch_size: usize,
+    moving: bool,
+) -> (UiModel, CommitAdapter, FrameworkCommit) {
+    let mut ui = UiModel::new();
+    let mut adapter = CommitAdapter::new();
+    let mut setup = FrameworkCommit::new();
+    setup.push(FrameworkOperation::CreateRootDeque {
+        id: FrameworkDequeId(1),
+    });
+    setup.push(FrameworkOperation::CreateChildDeque {
+        id: FrameworkDequeId(2),
+        parent: FrameworkDequeId(1),
+        side: anvil::deque_tree::ChildSide::Left,
+    });
+    setup.push(FrameworkOperation::CreateChildDeque {
+        id: FrameworkDequeId(3),
+        parent: FrameworkDequeId(1),
+        side: anvil::deque_tree::ChildSide::Right,
+    });
+
+    let per_source = sibling_count / 2;
+    for (source, deque) in [(0u64, 1u64), (1u64, 2u64)] {
+        let base = 10_000 + source * 100_000;
+        for index in 0..per_source {
+            setup.push(FrameworkOperation::CreateElement {
+                id: FrameworkElementId(base + index as u64),
+                deque: FrameworkDequeId(deque),
+                tag: "span".into(),
+                end: End::Front,
+            });
+        }
+        setup.push(FrameworkOperation::CreateElement {
+            id: FrameworkElementId(base + per_source as u64),
+            deque: FrameworkDequeId(deque),
+            tag: "main".into(),
+            end: End::Back,
+        });
+    }
+    setup.push(FrameworkOperation::CreateElement {
+        id: FrameworkElementId(900_000),
+        deque: FrameworkDequeId(3),
+        tag: "aside".into(),
+        end: End::Back,
+    });
+    adapter.apply_commit(setup, &mut ui).unwrap();
+    ui.prepare_render();
+
+    let mut commit = FrameworkCommit::new();
+    let per_source_batch = batch_size / 2;
+    for source in 0..2u64 {
+        let base = 10_000 + source * 100_000;
+        for index in 0..per_source_batch {
+            let anchor = FrameworkElementId(base + index as u64 + 1);
+            if moving {
+                commit.push(FrameworkOperation::MoveSubtree {
+                    anchor,
+                    target: FrameworkDequeId(3),
+                    target_end: End::Back,
+                });
+            } else {
+                commit.push(FrameworkOperation::RemoveSubtree { anchor });
+            }
+        }
+    }
+    (ui, adapter, commit)
+}
+
 fn main() {
     println!("Anvil structural mutation benchmarks");
     println!("target={} profile=bench", std::env::consts::ARCH);
@@ -264,6 +333,25 @@ fn main() {
                     ),
                     5,
                     || make_structural_commit_fixture(sibling_count, batch_size, moving),
+                );
+            }
+            println!();
+        }
+    }
+
+    println!(
+        "Framework multi-source structural commits (two source Deques, same target for moves):"
+    );
+    for moving in [false, true] {
+        for sibling_count in [128usize, 1_024, 4_096] {
+            for batch_size in [8usize, 32] {
+                report_batch(
+                    &format!(
+                        "FrameworkCommit multi-source {} / siblings={sibling_count} batch={batch_size}",
+                        if moving { "move" } else { "remove" }
+                    ),
+                    5,
+                    || make_multi_source_structural_fixture(sibling_count, batch_size, moving),
                 );
             }
             println!();

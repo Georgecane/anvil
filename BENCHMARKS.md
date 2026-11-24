@@ -25,7 +25,7 @@ The memory benchmark accepts tree or ui followed by the item count. Run each siz
 
 ## Environment
 
-Measurements recorded on 2026-11-24:
+Measurements recorded on 2026-11-25:
 
 - CPU: Intel Core i7-9750H, 6 cores / 12 threads
 - OS: Linux (CachyOS)
@@ -94,7 +94,7 @@ Run the structural suite with:
 cargo bench --bench structural
 ~~~
 
-The suite measures interior `UiModel.move_subtree` and `UiModel.remove_subtree` operations using fresh fixtures per timed operation. It also measures complete `FrameworkCommit` batches containing 1, 8, or 32 consecutive creates, removes, or moves in one Deque. Fixture setup is excluded from timing; commit timings include validation, UI mutation, mutation-journal recording, and Registry updates.
+The suite measures interior `UiModel.move_subtree` and `UiModel.remove_subtree` operations using fresh fixtures per timed operation. It also measures complete `FrameworkCommit` batches containing 1, 8, or 32 consecutive creates, removes, or moves, including two-source structural commits. Fixture setup is excluded from timing; commit timings include validation, UI mutation, mutation-journal recording, and Registry updates.
 
 ### Move one interior subtree
 
@@ -171,15 +171,30 @@ Median microseconds per complete Framework commit with 4,096 source siblings. Th
 
 The specialized path validates non-overlapping ranges against the live Deque, extracts all subtrees in one pass, and rebuilds the source indexes/hash once. Moves also insert all extracted groups and rebuild the target once. Every operation still gets its own mutation-journal record and stable Framework/native handle mapping. Single root operations, mixed commits, and batches spanning multiple source Deques fall back to the general validator and sequential path. Measurements vary with laptop load; compare on the same machine and toolchain.
 
+### Multi-source structural commits
+
+Median microseconds per complete Framework commit. The fixture has two source Deques, with the listed total sibling count split evenly between them. Move commits transfer to a third target Deque. Each source's operations are grouped contiguously; fixture construction is outside the timed region.
+
+| Total source siblings | Items | Remove | Move |
+|---:|---:|---:|---:|
+| 128 | 8 | 23.30 µs | 25.27 µs |
+| 128 | 32 | 51.48 µs | 57.53 µs |
+| 1,024 | 8 | 105.11 µs | 116.16 µs |
+| 1,024 | 32 | 136.48 µs | 137.92 µs |
+| 4,096 | 8 | 435.35 µs | 403.28 µs |
+| 4,096 | 32 | 457.19 µs | 454.28 µs |
+
+The multi-source path groups removals by source and compacts each source once. Moves are grouped by contiguous source/target/end runs, preserving the original operation order. The fast validator checks the combined remove/move ranges per source and rejects overlapping ranges or commits whose move target is also a source. Those dependent or overlapping cases retain the full sequential validator.
+
 ### What changed
 
 - Mutation journal entries retain only old/new parent identities. They no longer clone full sibling lists before structural operations.
 - Stylo derives affected sibling context from the post-mutation projection. Structural invalidation still covers current siblings and ancestors; removed nodes are handled through the removed-state list. Regression tests cover `:nth-child`, `:has(+ ...)`, and sibling selectors across ghost roots.
 - Deque extraction adjusts ancestor spans during the same pass that rebuilds entry indexes, parent indexes, and the identity hash, eliminating a separate suffix scan.
 - Framework commits coalesce adjacent `CreateElement` and `CreateText` operations when they target the same Deque and insertion end. `push_front_many` and `push_back_many` preserve sequential ordering while rebuilding Deque indexes and identity hash once. Individual handles and mutation-journal entries are still emitted for every create operation.
-- Consecutive non-overlapping `RemoveSubtree` operations from one Deque and `MoveSubtree` operations sharing one source, target, and end are applied as structural batches. The source is compacted once; a move's target is refreshed once. Specialized validation avoids copying the full UI snapshot for these common pure structural commits. General mixed and cross-source commits retain the existing full validator.
+- Independent structural-only commits can combine `RemoveSubtree` and `MoveSubtree` operations across multiple source Deques without building the full framework validation snapshot. Combined remove/move ranges are validated together per source; each source is compacted once per batch, and moves preserve commit order through contiguous source/target/end runs. Overlapping ranges and source/target dependencies fall back to the full sequential validator.
 
-The remaining growth for a single interior move is expected from the contiguous `VecDeque` representation: extracting an interior interval shifts entries, updates the derived ID-to-index map, and recomputes the order-sensitive Deque identity hash. This work is not yet sublinear. Batch creation, removal, and movement amortize that rebuild across adjacent operations.
+The remaining growth for a single interior move is expected from the contiguous `VecDeque` representation: extracting an interior interval shifts entries, updates the derived ID-to-index map, and recomputes the order-sensitive Deque identity hash. This work is not yet sublinear. Batch creation, removal, and movement amortize that rebuild across grouped operations and source Deques.
 
 ## Interpretation
 
