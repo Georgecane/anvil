@@ -1555,6 +1555,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn registry_hash_checks_are_coalesced_until_structural_commit_finishes() {
+        let mut ui = UiModel::new();
+        let root = ui.create_root_deque().unwrap();
+        let target = ui.create_child_deque(root, ChildSide::Left).unwrap();
+        let root_element = ui.create_element(root, "main", End::Back).unwrap();
+        let first = ui.create_element(root, "first", End::Front).unwrap();
+        let second = ui.create_element(root, "second", End::Front).unwrap();
+        ui.seal_initial_topology();
+
+        let source_id = ui.deque_id(root).unwrap();
+        let target_id = ui.deque_id(target).unwrap();
+        let revision_before = ui.mutation_revision();
+
+        ui.begin_registry_batch();
+        ui.move_subtree(first, target, End::Back).unwrap();
+        ui.move_subtree(second, target, End::Back).unwrap();
+
+        let pending = ui.deferred_registry_checks.as_ref().unwrap();
+        assert_eq!(pending.len(), 2);
+        let pending_mutations: Vec<_> = ui
+            .mutation_journal
+            .iter()
+            .filter(|mutation| mutation.revision > revision_before)
+            .collect();
+        assert_eq!(pending_mutations.len(), 2);
+        assert!(pending_mutations
+            .iter()
+            .all(|mutation| mutation.hash_changed_deques.is_empty()));
+
+        ui.finish_registry_batch();
+
+        assert!(ui.deferred_registry_checks.is_none());
+        let changed: HashSet<_> = ui
+            .mutation_journal
+            .iter()
+            .filter(|mutation| mutation.revision > revision_before)
+            .flat_map(|mutation| mutation.hash_changed_deques.iter().copied())
+            .collect();
+        assert_eq!(changed, HashSet::from([source_id, target_id]));
+        assert!(ui.element(root_element).is_some());
+    }
+
+    #[test]
     fn removing_parent_from_back_removes_its_complete_descendant_range() {
         let mut ui = UiModel::new();
         let root = ui.create_root_deque().unwrap();
