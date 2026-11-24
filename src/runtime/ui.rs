@@ -1,7 +1,7 @@
 use crate::deque_tree::{
     ChildSide, Deque, DequeRegistry, DequeTree, End, NodeId, RenderFrame, TreeError,
 };
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 static NEXT_DEQUE_HANDLE: AtomicU32 = AtomicU32::new(1);
