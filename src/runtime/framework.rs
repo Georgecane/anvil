@@ -614,6 +614,108 @@ impl CommitAdapter {
         Ok(true)
     }
 
+    /// Batches independent structural operations across interleaved property/text updates.
+    /// Non-structural targets must be outside every moved or removed subtree. This
+    /// makes the structural extraction commute with the remaining value updates.
+    fn apply_mixed_independent_structural_batch(
+        &mut self,
+        commit: &FrameworkCommit,
+        ui: &mut UiModel,
+    ) -> Result<bool, FrameworkError> {
+        let mut structural_operations = Vec::new();
+        let mut value_targets = HashSet::new();
+
+        for operation in commit.operations() {
+            match operation {
+                FrameworkOperation::RemoveSubtree { .. }
+                | FrameworkOperation::MoveSubtree { .. } => {
+                    structural_operations.push(operation.clone());
+                }
+                FrameworkOperation::SetText { id, .. }
+                | FrameworkOperation::SetProperty { id, .. }
+                | FrameworkOperation::RemoveProperty { id, .. }
+                | FrameworkOperation::SetStyle { id, .. }
+                | FrameworkOperation::RemoveStyle { id, .. } => {
+                    let handle = self
+                        .elements
+                        .get(id)
+                        .copied()
+                        .ok_or(FrameworkError::UnknownElement(*id))?;
+                    value_targets.insert(handle);
+                }
+                // Creates can establish dependencies for later structural operations,
+                // and topology changes cannot be reordered across a sealed commit.
+                _ => return Ok(false),
+            }
+        }
+
+        if structural_operations.is_empty() || value_targets.is_empty() {
+            return Ok(false);
+        }
+
+        let structural_commit = FrameworkCommit {
+            operations: structural_operations,
+        };
+        let mut structurally_affected = HashSet::new();
+        for operation in structural_commit.operations() {
+            let anchor = match operation {
+                FrameworkOperation::RemoveSubtree { anchor }
+                | FrameworkOperation::MoveSubtree { anchor, .. } => *anchor,
+                _ => unreachable!("structural commit contains only structural operations"),
+            };
+            let handle = *self
+                .elements
+                .get(&anchor)
+                .ok_or(FrameworkError::UnknownElement(anchor))?;
+            structurally_affected.extend(ui.preview_subtree_handles(handle)?);
+        }
+
+        if value_targets
+            .iter()
+            .any(|handle| structurally_affected.contains(handle))
+        {
+            return Ok(false);
+        }
+
+        if !self.validate_structural_only_batch(&structural_commit, ui)? {
+            return Ok(false);
+        }
+        if !self.apply_global_structural_batch(&structural_commit, ui)? {
+            return Ok(false);
+        }
+
+        // Keep value-operation order intact. Their targets are guaranteed to
+        // survive and remain outside all structurally transformed subtrees.
+        for operation in commit.operations() {
+            match operation {
+                FrameworkOperation::SetText { id, text } => {
+                    let handle = self.elements[id];
+                    ui.set_text(handle, text.clone()).map_err(|error| match error {
+                        UiError::NotText(_) => FrameworkError::NotText(*id),
+                        other => FrameworkError::Ui(other),
+                    })?;
+                }
+                FrameworkOperation::SetProperty { id, key, value } => {
+                    ui.set_property(self.elements[id], key.clone(), value.clone())?;
+                }
+                FrameworkOperation::RemoveProperty { id, key } => {
+                    ui.remove_property(self.elements[id], key)?;
+                }
+                FrameworkOperation::SetStyle { id, key, value } => {
+                    ui.set_style(self.elements[id], key.clone(), value.clone())?;
+                }
+                FrameworkOperation::RemoveStyle { id, key } => {
+                    ui.remove_style(self.elements[id], key)?;
+                }
+                FrameworkOperation::RemoveSubtree { .. }
+                | FrameworkOperation::MoveSubtree { .. } => {}
+                _ => unreachable!("mixed batch was preflighted to contain only value updates"),
+            }
+        }
+
+        Ok(true)
+    }
+
     fn validate(&self, commit: &FrameworkCommit, ui: &UiModel) -> Result<(), FrameworkError> {
         if !commit.operations().iter().any(|operation| {
             matches!(
@@ -1006,6 +1108,11 @@ impl FrameworkAdapter for CommitAdapter {
         }
         let apply_result = (|| -> Result<(), FrameworkError> {
             if structural_batch && self.apply_global_structural_batch(&commit, ui)? {
+                return Ok(());
+            }
+            if !structural_batch
+                && self.apply_mixed_independent_structural_batch(&commit, ui)?
+            {
                 return Ok(());
             }
             let mut operations = commit.operations.into_iter().peekable();
@@ -1999,4 +2106,127 @@ mod initial_snapshot_tests {
         assert_eq!(ui.registry().len(), 1);
         assert!(ui.topology_is_sealed());
     }
+    #[test]
+    fn mixed_commit_batches_independent_structural_ops_around_value_updates() {
+        let mut ui = UiModel::new();
+        let mut adapter = CommitAdapter::new();
+        let mut setup = FrameworkCommit::new();
+        setup.push(FrameworkOperation::CreateRootDeque {
+            id: FrameworkDequeId(1),
+        });
+        setup.push(FrameworkOperation::CreateChildDeque {
+            id: FrameworkDequeId(2),
+            parent: FrameworkDequeId(1),
+            side: crate::deque_tree::ChildSide::Left,
+        });
+        setup.push(FrameworkOperation::CreateChildDeque {
+            id: FrameworkDequeId(3),
+            parent: FrameworkDequeId(1),
+            side: crate::deque_tree::ChildSide::Right,
+        });
+        setup.push(FrameworkOperation::CreateChildDeque {
+            id: FrameworkDequeId(4),
+            parent: FrameworkDequeId(2),
+            side: crate::deque_tree::ChildSide::Left,
+        });
+        setup.push(FrameworkOperation::CreateChildDeque {
+            id: FrameworkDequeId(5),
+            parent: FrameworkDequeId(3),
+            side: crate::deque_tree::ChildSide::Right,
+        });
+        setup.push(FrameworkOperation::CreateElement {
+            id: FrameworkElementId(100),
+            deque: FrameworkDequeId(1),
+            tag: "main".into(),
+            end: End::Back,
+        });
+        setup.push(FrameworkOperation::CreateElement {
+            id: FrameworkElementId(1),
+            deque: FrameworkDequeId(2),
+            tag: "article".into(),
+            end: End::Back,
+        });
+        setup.push(FrameworkOperation::CreateElement {
+            id: FrameworkElementId(2),
+            deque: FrameworkDequeId(3),
+            tag: "aside".into(),
+            end: End::Back,
+        });
+        adapter.apply_commit(setup, &mut ui).unwrap();
+
+        let mut commit = FrameworkCommit::new();
+        commit.push(FrameworkOperation::MoveSubtree {
+            anchor: FrameworkElementId(1),
+            target: FrameworkDequeId(4),
+            target_end: End::Back,
+        });
+        commit.push(FrameworkOperation::SetProperty {
+            id: FrameworkElementId(100),
+            key: "data-phase".into(),
+            value: "ready".into(),
+        });
+        commit.push(FrameworkOperation::MoveSubtree {
+            anchor: FrameworkElementId(2),
+            target: FrameworkDequeId(5),
+            target_end: End::Back,
+        });
+
+        adapter.apply_commit(commit, &mut ui).unwrap();
+
+        let first = adapter.native_element(FrameworkElementId(1)).unwrap();
+        let second = adapter.native_element(FrameworkElementId(2)).unwrap();
+        let root = adapter.native_element(FrameworkElementId(100)).unwrap();
+        assert_eq!(ui.element(root).unwrap().get_property("data-phase"), Some("ready"));
+        assert_eq!(ui.logical_parent(first), Some(root));
+        assert_eq!(ui.logical_parent(second), Some(root));
+        assert_eq!(ui.deque_handle_for_element(first), adapter.native_deque(FrameworkDequeId(4)));
+        assert_eq!(ui.deque_handle_for_element(second), adapter.native_deque(FrameworkDequeId(5)));
+    }
+
+    #[test]
+    fn mixed_structural_batch_falls_back_when_value_target_is_moved() {
+        let mut ui = UiModel::new();
+        let mut adapter = CommitAdapter::new();
+        let mut setup = FrameworkCommit::new();
+        setup.push(FrameworkOperation::CreateRootDeque {
+            id: FrameworkDequeId(1),
+        });
+        setup.push(FrameworkOperation::CreateChildDeque {
+            id: FrameworkDequeId(2),
+            parent: FrameworkDequeId(1),
+            side: crate::deque_tree::ChildSide::Left,
+        });
+        setup.push(FrameworkOperation::CreateElement {
+            id: FrameworkElementId(1),
+            deque: FrameworkDequeId(1),
+            tag: "main".into(),
+            end: End::Back,
+        });
+        setup.push(FrameworkOperation::CreateElement {
+            id: FrameworkElementId(2),
+            deque: FrameworkDequeId(1),
+            tag: "article".into(),
+            end: End::Front,
+        });
+        adapter.apply_commit(setup, &mut ui).unwrap();
+
+        let mut commit = FrameworkCommit::new();
+        commit.push(FrameworkOperation::MoveSubtree {
+            anchor: FrameworkElementId(2),
+            target: FrameworkDequeId(2),
+            target_end: End::Back,
+        });
+        commit.push(FrameworkOperation::SetProperty {
+            id: FrameworkElementId(2),
+            key: "data-state".into(),
+            value: "moved".into(),
+        });
+
+        adapter.apply_commit(commit, &mut ui).unwrap();
+
+        let moved = adapter.native_element(FrameworkElementId(2)).unwrap();
+        assert_eq!(ui.element(moved).unwrap().get_property("data-state"), Some("moved"));
+        assert_eq!(ui.deque_handle_for_element(moved), adapter.native_deque(FrameworkDequeId(2)));
+    }
+
 }
