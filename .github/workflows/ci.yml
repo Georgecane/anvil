@@ -41,6 +41,9 @@ jobs:
       - name: Check all targets
         run: cargo check --all-targets
 
+      - name: Compile benchmark targets
+        run: cargo bench --no-run
+
       - name: Run Clippy
         run: cargo clippy --all-targets -- -D warnings
 
