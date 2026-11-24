@@ -1580,9 +1580,11 @@ mod tests {
             .filter(|mutation| mutation.revision > revision_before)
             .collect();
         assert_eq!(pending_mutations.len(), 2);
-        assert!(pending_mutations
-            .iter()
-            .all(|mutation| mutation.hash_changed_deques.is_empty()));
+        assert!(
+            pending_mutations
+                .iter()
+                .all(|mutation| mutation.hash_changed_deques.is_empty())
+        );
 
         ui.finish_registry_batch();
 

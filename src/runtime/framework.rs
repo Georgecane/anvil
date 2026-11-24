@@ -924,11 +924,33 @@ impl FrameworkAdapter for CommitAdapter {
                         self.deques.insert(id, h);
                         self.reverse_deques.insert(h, id);
                     }
-                    FrameworkOperation::CreateElement { id, deque, tag, end } => {
-                        self.apply_create_batch(deque, end, (id, UiElement::new(tag)), &mut operations, ui)?;
+                    FrameworkOperation::CreateElement {
+                        id,
+                        deque,
+                        tag,
+                        end,
+                    } => {
+                        self.apply_create_batch(
+                            deque,
+                            end,
+                            (id, UiElement::new(tag)),
+                            &mut operations,
+                            ui,
+                        )?;
                     }
-                    FrameworkOperation::CreateText { id, deque, text, end } => {
-                        self.apply_create_batch(deque, end, (id, UiElement::text(text)), &mut operations, ui)?;
+                    FrameworkOperation::CreateText {
+                        id,
+                        deque,
+                        text,
+                        end,
+                    } => {
+                        self.apply_create_batch(
+                            deque,
+                            end,
+                            (id, UiElement::text(text)),
+                            &mut operations,
+                            ui,
+                        )?;
                     }
                     FrameworkOperation::SetText { id, text } => {
                         let h = self.elements[&id];
@@ -937,12 +959,28 @@ impl FrameworkAdapter for CommitAdapter {
                             other => FrameworkError::Ui(other),
                         })?;
                     }
-                    FrameworkOperation::SetProperty { id, key, value } => ui.set_property(self.elements[&id], key, value)?,
-                    FrameworkOperation::RemoveProperty { id, key } => ui.remove_property(self.elements[&id], &key)?,
-                    FrameworkOperation::SetStyle { id, key, value } => ui.set_style(self.elements[&id], key, value)?,
-                    FrameworkOperation::RemoveStyle { id, key } => ui.remove_style(self.elements[&id], &key)?,
-                    FrameworkOperation::RemoveSubtree { anchor } => self.apply_remove_batch(anchor, &mut operations, ui)?,
-                    FrameworkOperation::MoveSubtree { anchor, target, target_end } => self.apply_move_batch(anchor, target, target_end, &mut operations, ui)?,
+                    FrameworkOperation::SetProperty { id, key, value } => {
+                        ui.set_property(self.elements[&id], key, value)?
+                    }
+                    FrameworkOperation::RemoveProperty { id, key } => {
+                        ui.remove_property(self.elements[&id], &key)?
+                    }
+                    FrameworkOperation::SetStyle { id, key, value } => {
+                        ui.set_style(self.elements[&id], key, value)?
+                    }
+                    FrameworkOperation::RemoveStyle { id, key } => {
+                        ui.remove_style(self.elements[&id], &key)?
+                    }
+                    FrameworkOperation::RemoveSubtree { anchor } => {
+                        self.apply_remove_batch(anchor, &mut operations, ui)?
+                    }
+                    FrameworkOperation::MoveSubtree {
+                        anchor,
+                        target,
+                        target_end,
+                    } => {
+                        self.apply_move_batch(anchor, target, target_end, &mut operations, ui)?
+                    },
                 }
             }
             Ok(())
