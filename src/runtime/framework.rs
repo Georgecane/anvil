@@ -519,6 +519,102 @@ impl CommitAdapter {
         Ok(())
     }
 
+    /// Applies a commit-wide plan for independent structural operations.
+    /// Every source participates in one extraction group, every target receives
+    /// moves from one source group, and all ranges were validated against the
+    /// same initial Deque snapshot before this method is entered.
+    fn apply_global_structural_batch(
+        &mut self,
+        commit: &FrameworkCommit,
+        ui: &mut UiModel,
+    ) -> Result<bool, FrameworkError> {
+        let mut removals = Vec::new();
+        let mut removal_sources = HashSet::new();
+        let mut move_sources = HashSet::new();
+        let mut move_targets = HashSet::new();
+        let mut move_groups: Vec<(usize, DequeHandle, DequeHandle, End, Vec<ElementHandle>)> =
+            Vec::new();
+
+        for (index, operation) in commit.operations().iter().enumerate() {
+            match operation {
+                FrameworkOperation::RemoveSubtree { anchor } => {
+                    let handle = *self
+                        .elements
+                        .get(anchor)
+                        .ok_or(FrameworkError::UnknownElement(*anchor))?;
+                    let source = ui
+                        .deque_handle_for_element(handle)
+                        .ok_or(FrameworkError::UnknownElement(*anchor))?;
+                    if move_sources.contains(&source) {
+                        return Ok(false);
+                    }
+                    removal_sources.insert(source);
+                    removals.push(handle);
+                }
+                FrameworkOperation::MoveSubtree {
+                    anchor,
+                    target,
+                    target_end,
+                } => {
+                    let handle = *self
+                        .elements
+                        .get(anchor)
+                        .ok_or(FrameworkError::UnknownElement(*anchor))?;
+                    let source = ui
+                        .deque_handle_for_element(handle)
+                        .ok_or(FrameworkError::UnknownElement(*anchor))?;
+                    let target_handle = *self
+                        .deques
+                        .get(target)
+                        .ok_or(FrameworkError::UnknownDeque(*target))?;
+                    if removal_sources.contains(&source) || !move_targets.insert(target_handle) {
+                        return Ok(false);
+                    }
+
+                    if let Some((_, existing_source, existing_target, existing_end, handles)) =
+                        move_groups.iter_mut().find(|(_, _, _, _, handles)| {
+                            handles.first().is_some_and(|first| {
+                                ui.deque_handle_for_element(*first) == Some(source)
+                            })
+                        })
+                    {
+                        if *existing_source != source
+                            || *existing_target != target_handle
+                            || *existing_end != *target_end
+                        {
+                            return Ok(false);
+                        }
+                        handles.push(handle);
+                    } else {
+                        if !move_sources.insert(source) {
+                            return Ok(false);
+                        }
+                        move_groups.push((index, source, target_handle, *target_end, vec![handle]));
+                    }
+                }
+                _ => return Ok(false),
+            }
+        }
+
+        if move_targets.iter().any(|target| {
+            removal_sources.contains(target) || move_sources.contains(target)
+        }) {
+            return Ok(false);
+        }
+
+        move_groups.sort_unstable_by_key(|(index, _, _, _, _)| *index);
+        if !removals.is_empty() {
+            let removed = ui.remove_subtrees_batch(&removals)?;
+            for group in removed {
+                self.remove_native_elements(&group);
+            }
+        }
+        for (_, _, target, end, handles) in move_groups {
+            ui.move_subtrees_batch(&handles, target, end)?;
+        }
+        Ok(true)
+    }
+
     fn validate(&self, commit: &FrameworkCommit, ui: &UiModel) -> Result<(), FrameworkError> {
         if !commit.operations().iter().any(|operation| {
             matches!(
@@ -910,6 +1006,9 @@ impl FrameworkAdapter for CommitAdapter {
             ui.begin_registry_batch();
         }
         let apply_result = (|| -> Result<(), FrameworkError> {
+            if structural_batch && self.apply_global_structural_batch(&commit, ui)? {
+                return Ok(());
+            }
             let mut operations = commit.operations.into_iter().peekable();
             while let Some(op) = operations.next() {
                 match op {

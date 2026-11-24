@@ -278,6 +278,8 @@ pub struct UiModel {
     acknowledged_mutation_revision: u64,
     mutation_journal: VecDeque<UiMutation>,
     deferred_registry_checks: Option<HashSet<NodeId>>,
+    render_stack_batch_active: bool,
+    deferred_render_stack_refresh: bool,
 }
 impl Default for UiModel {
     fn default() -> Self {
@@ -361,6 +363,8 @@ impl UiModel {
             acknowledged_mutation_revision: 0,
             mutation_journal: VecDeque::new(),
             deferred_registry_checks: None,
+            render_stack_batch_active: false,
+            deferred_render_stack_refresh: false,
         })
     }
 
@@ -377,6 +381,8 @@ impl UiModel {
             acknowledged_mutation_revision: 0,
             mutation_journal: VecDeque::new(),
             deferred_registry_checks: None,
+            render_stack_batch_active: false,
+            deferred_render_stack_refresh: false,
         }
     }
     pub fn allocate_deque_handle() -> DequeHandle {
@@ -471,28 +477,41 @@ impl UiModel {
         if self.deferred_registry_checks.is_none() {
             self.deferred_registry_checks = Some(HashSet::new());
         }
+        self.render_stack_batch_active = true;
+    }
+
+    fn request_render_stack_refresh(&mut self) {
+        if self.render_stack_batch_active {
+            self.deferred_render_stack_refresh = true;
+        } else {
+            self.registry.refresh_render_stack(&self.tree);
+        }
     }
 
     /// Performs one Registry update for all Deques touched by a deferred commit.
     /// Each changed Deque is attributed to its last mutation record so the
     /// invalidation pass sees the change exactly once.
     pub(crate) fn finish_registry_batch(&mut self) {
-        let Some(candidates) = self.deferred_registry_checks.take() else {
-            return;
-        };
-        if candidates.is_empty() {
-            return;
-        }
-        let changed = self.registry.detect_changes_for(&mut self.tree, candidates);
-        for deque_id in changed {
-            if let Some(mutation) = self
-                .mutation_journal
-                .iter_mut()
-                .rev()
-                .find(|mutation| mutation.checked_deques.contains(&deque_id))
-            {
-                mutation.hash_changed_deques.push(deque_id);
+        if let Some(candidates) = self.deferred_registry_checks.take()
+            && !candidates.is_empty()
+        {
+            let changed = self.registry.detect_changes_for(&mut self.tree, candidates);
+            for deque_id in changed {
+                if let Some(mutation) = self
+                    .mutation_journal
+                    .iter_mut()
+                    .rev()
+                    .find(|mutation| mutation.checked_deques.contains(&deque_id))
+                {
+                    mutation.hash_changed_deques.push(deque_id);
+                }
             }
+        }
+
+        self.render_stack_batch_active = false;
+        if self.deferred_render_stack_refresh {
+            self.deferred_render_stack_refresh = false;
+            self.registry.refresh_render_stack(&self.tree);
         }
     }
 
@@ -672,7 +691,7 @@ impl UiModel {
         }
 
         if self.topology_sealed && was_ghost {
-            self.registry.refresh_render_stack(&self.tree);
+            self.request_render_stack_refresh();
         }
 
         for handle in &handles {
@@ -728,7 +747,7 @@ impl UiModel {
         );
         self.entry_handles.insert((node_id, entry), handle);
         if self.topology_sealed && was_ghost {
-            self.registry.refresh_render_stack(&self.tree);
+            self.request_render_stack_refresh();
         }
         let new_context = self.mutation_context(handle);
         self.record_mutation(
@@ -1108,7 +1127,7 @@ impl UiModel {
             render_stack_changed |= self.tree.reconcile_ghosts_for(source);
         }
         if render_stack_changed {
-            self.registry.refresh_render_stack(&self.tree);
+            self.request_render_stack_refresh();
         }
         for (index, anchor) in anchors.iter().enumerate() {
             self.record_mutation(
@@ -1172,7 +1191,7 @@ impl UiModel {
             render_stack_changed = self.tree.reconcile_ghosts_for(loc.deque);
         }
         if render_stack_changed {
-            self.registry.refresh_render_stack(&self.tree);
+            self.request_render_stack_refresh();
         }
         self.record_mutation(
             UiMutationKind::Remove,
@@ -1287,7 +1306,7 @@ impl UiModel {
 
         let source_became_ghost = self.tree.reconcile_ghosts_for(source);
         if target_was_ghost || source_became_ghost {
-            self.registry.refresh_render_stack(&self.tree);
+            self.request_render_stack_refresh();
         }
         for (index, anchor) in anchors.iter().enumerate() {
             let new_context = self.mutation_context(*anchor);
@@ -1358,7 +1377,7 @@ impl UiModel {
         }
         let source_became_ghost = self.tree.reconcile_ghosts_for(loc.deque);
         if target_was_ghost || source_became_ghost {
-            self.registry.refresh_render_stack(&self.tree);
+            self.request_render_stack_refresh();
         }
         let new_context = self.mutation_context(anchor);
         self.record_mutation(
