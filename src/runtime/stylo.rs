@@ -1576,7 +1576,10 @@ impl StyloStyleEngine {
 
         insert_css!("border-top-width", values.slow_clone_border_top_width());
         insert_css!("border-right-width", values.slow_clone_border_right_width());
-        insert_css!("border-bottom-width", values.slow_clone_border_bottom_width());
+        insert_css!(
+            "border-bottom-width",
+            values.slow_clone_border_bottom_width()
+        );
         insert_css!("border-left-width", values.slow_clone_border_left_width());
 
         insert_css!("top", values.slow_clone_top());
