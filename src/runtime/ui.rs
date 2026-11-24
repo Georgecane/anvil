@@ -277,6 +277,7 @@ pub struct UiModel {
     mutation_revision: u64,
     acknowledged_mutation_revision: u64,
     mutation_journal: VecDeque<UiMutation>,
+    deferred_registry_checks: Option<HashSet<NodeId>>,
 }
 impl Default for UiModel {
     fn default() -> Self {
@@ -359,6 +360,7 @@ impl UiModel {
             mutation_revision: 0,
             acknowledged_mutation_revision: 0,
             mutation_journal: VecDeque::new(),
+            deferred_registry_checks: None,
         })
     }
 
@@ -374,6 +376,7 @@ impl UiModel {
             mutation_revision: 0,
             acknowledged_mutation_revision: 0,
             mutation_journal: VecDeque::new(),
+            deferred_registry_checks: None,
         }
     }
     pub fn allocate_deque_handle() -> DequeHandle {
@@ -460,6 +463,41 @@ impl UiModel {
         }
     }
 
+    /// Defers targeted Registry hash checks until the complete FrameworkCommit
+    /// has been applied. Mutation journal entries remain per operation; only
+    /// redundant checks for the same Deque are coalesced.
+    pub(crate) fn begin_registry_batch(&mut self) {
+        debug_assert!(self.deferred_registry_checks.is_none());
+        if self.deferred_registry_checks.is_none() {
+            self.deferred_registry_checks = Some(HashSet::new());
+        }
+    }
+
+    /// Performs one Registry update for all Deques touched by a deferred commit.
+    /// Each changed Deque is attributed to its last mutation record so the
+    /// invalidation pass sees the change exactly once.
+    pub(crate) fn finish_registry_batch(&mut self) {
+        let Some(candidates) = self.deferred_registry_checks.take() else {
+            return;
+        };
+        if candidates.is_empty() {
+            return;
+        }
+        let changed = self
+            .registry
+            .detect_changes_for(&mut self.tree, candidates.into_iter());
+        for deque_id in changed {
+            if let Some(mutation) = self
+                .mutation_journal
+                .iter_mut()
+                .rev()
+                .find(|mutation| mutation.checked_deques.contains(&deque_id))
+            {
+                mutation.hash_changed_deques.push(deque_id);
+            }
+        }
+    }
+
     fn record_mutation(
         &mut self,
         kind: UiMutationKind,
@@ -473,8 +511,13 @@ impl UiModel {
         checked_deques.sort_unstable();
         checked_deques.dedup();
         let hash_changed_deques = if self.topology_sealed {
-            self.registry
-                .detect_changes_for(&mut self.tree, checked_deques.iter().copied())
+            if let Some(pending) = self.deferred_registry_checks.as_mut() {
+                pending.extend(checked_deques.iter().copied());
+                Vec::new()
+            } else {
+                self.registry
+                    .detect_changes_for(&mut self.tree, checked_deques.iter().copied())
+            }
         } else {
             checked_deques.clear();
             Vec::new()

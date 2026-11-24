@@ -900,80 +900,57 @@ impl FrameworkAdapter for CommitAdapter {
         if !structural_batch {
             self.validate(&commit, ui)?;
         }
-        let mut operations = commit.operations.into_iter().peekable();
-        while let Some(op) = operations.next() {
-            match op {
-                FrameworkOperation::CreateRootDeque { id } => {
-                    let h = ui.create_root_deque()?;
-                    self.deques.insert(id, h);
-                    self.reverse_deques.insert(h, id);
-                }
-                FrameworkOperation::CreateChildDeque { id, parent, side } => {
-                    let p = self.deques[&parent];
-                    let h = ui.create_child_deque(p, side)?;
-                    self.deques.insert(id, h);
-                    self.reverse_deques.insert(h, id);
-                }
-                FrameworkOperation::CreateElement {
-                    id,
-                    deque,
-                    tag,
-                    end,
-                } => {
-                    self.apply_create_batch(
-                        deque,
-                        end,
-                        (id, UiElement::new(tag)),
-                        &mut operations,
-                        ui,
-                    )?;
-                }
-                FrameworkOperation::CreateText {
-                    id,
-                    deque,
-                    text,
-                    end,
-                } => {
-                    self.apply_create_batch(
-                        deque,
-                        end,
-                        (id, UiElement::text(text)),
-                        &mut operations,
-                        ui,
-                    )?;
-                }
-                FrameworkOperation::SetText { id, text } => {
-                    let h = self.elements[&id];
-                    ui.set_text(h, text).map_err(|e| match e {
-                        UiError::NotText(_) => FrameworkError::NotText(id),
-                        other => FrameworkError::Ui(other),
-                    })?;
-                }
-                FrameworkOperation::SetProperty { id, key, value } => {
-                    ui.set_property(self.elements[&id], key, value)?
-                }
-                FrameworkOperation::RemoveProperty { id, key } => {
-                    ui.remove_property(self.elements[&id], &key)?
-                }
-                FrameworkOperation::SetStyle { id, key, value } => {
-                    ui.set_style(self.elements[&id], key, value)?
-                }
-                FrameworkOperation::RemoveStyle { id, key } => {
-                    ui.remove_style(self.elements[&id], &key)?
-                }
-                FrameworkOperation::RemoveSubtree { anchor } => {
-                    self.apply_remove_batch(anchor, &mut operations, ui)?;
-                }
-                FrameworkOperation::MoveSubtree {
-                    anchor,
-                    target,
-                    target_end,
-                } => {
-                    self.apply_move_batch(anchor, target, target_end, &mut operations, ui)?;
+        let defer_registry_updates = commit.operations().iter().any(|operation| {
+            matches!(
+                operation,
+                FrameworkOperation::RemoveSubtree { .. } | FrameworkOperation::MoveSubtree { .. }
+            )
+        });
+        if defer_registry_updates {
+            ui.begin_registry_batch();
+        }
+        let apply_result = (|| -> Result<(), FrameworkError> {
+            let mut operations = commit.operations.into_iter().peekable();
+            while let Some(op) = operations.next() {
+                match op {
+                    FrameworkOperation::CreateRootDeque { id } => {
+                        let h = ui.create_root_deque()?;
+                        self.deques.insert(id, h);
+                        self.reverse_deques.insert(h, id);
+                    }
+                    FrameworkOperation::CreateChildDeque { id, parent, side } => {
+                        let p = self.deques[&parent];
+                        let h = ui.create_child_deque(p, side)?;
+                        self.deques.insert(id, h);
+                        self.reverse_deques.insert(h, id);
+                    }
+                    FrameworkOperation::CreateElement { id, deque, tag, end } => {
+                        self.apply_create_batch(deque, end, (id, UiElement::new(tag)), &mut operations, ui)?;
+                    }
+                    FrameworkOperation::CreateText { id, deque, text, end } => {
+                        self.apply_create_batch(deque, end, (id, UiElement::text(text)), &mut operations, ui)?;
+                    }
+                    FrameworkOperation::SetText { id, text } => {
+                        let h = self.elements[&id];
+                        ui.set_text(h, text).map_err(|e| match e {
+                            UiError::NotText(_) => FrameworkError::NotText(id),
+                            other => FrameworkError::Ui(other),
+                        })?;
+                    }
+                    FrameworkOperation::SetProperty { id, key, value } => ui.set_property(self.elements[&id], key, value)?,
+                    FrameworkOperation::RemoveProperty { id, key } => ui.remove_property(self.elements[&id], &key)?,
+                    FrameworkOperation::SetStyle { id, key, value } => ui.set_style(self.elements[&id], key, value)?,
+                    FrameworkOperation::RemoveStyle { id, key } => ui.remove_style(self.elements[&id], &key)?,
+                    FrameworkOperation::RemoveSubtree { anchor } => self.apply_remove_batch(anchor, &mut operations, ui)?,
+                    FrameworkOperation::MoveSubtree { anchor, target, target_end } => self.apply_move_batch(anchor, target, target_end, &mut operations, ui)?,
                 }
             }
+            Ok(())
+        })();
+        if defer_registry_updates {
+            ui.finish_registry_batch();
         }
-        Ok(())
+        apply_result
     }
 }
 
