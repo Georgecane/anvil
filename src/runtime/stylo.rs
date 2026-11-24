@@ -1545,29 +1545,52 @@ impl StyloStyleEngine {
 
     fn serialize_computed_values(values: &ComputedValues) -> BTreeMap<String, String> {
         let mut result = BTreeMap::new();
-        result.insert(
-            "display".into(),
-            values.get_box().get_display().to_css_string(),
+        macro_rules! insert_css {
+            ($name:literal, $value:expr) => {
+                result.insert($name.into(), $value.to_css_string());
+            };
+        }
+
+        insert_css!("display", values.get_box().get_display());
+        insert_css!("box-sizing", values.clone_box_sizing());
+        insert_css!("position", values.clone_position());
+
+        // Physical dimensions and edges are copied from Stylo's computed
+        // values. This adapter does not parse declarations or resolve CSS.
+        insert_css!("width", values.clone_width());
+        insert_css!("height", values.clone_height());
+        insert_css!("min-width", values.clone_min_width());
+        insert_css!("min-height", values.clone_min_height());
+        insert_css!("max-width", values.clone_max_width());
+        insert_css!("max-height", values.clone_max_height());
+
+        insert_css!("margin-top", values.clone_margin_top());
+        insert_css!("margin-right", values.clone_margin_right());
+        insert_css!("margin-bottom", values.clone_margin_bottom());
+        insert_css!("margin-left", values.clone_margin_left());
+
+        insert_css!("padding-top", values.clone_padding_top());
+        insert_css!("padding-right", values.clone_padding_right());
+        insert_css!("padding-bottom", values.clone_padding_bottom());
+        insert_css!("padding-left", values.clone_padding_left());
+
+        insert_css!("border-top-width", values.clone_border_top_width());
+        insert_css!("border-right-width", values.clone_border_right_width());
+        insert_css!("border-bottom-width", values.clone_border_bottom_width());
+        insert_css!("border-left-width", values.clone_border_left_width());
+
+        insert_css!("top", values.clone_top());
+        insert_css!("right", values.clone_right());
+        insert_css!("bottom", values.clone_bottom());
+        insert_css!("left", values.clone_left());
+
+        insert_css!("color", values.get_inherited_text().get_color());
+        insert_css!(
+            "background-color",
+            values.get_background().get_background_color()
         );
-        result.insert(
-            "color".into(),
-            values.get_inherited_text().get_color().to_css_string(),
-        );
-        result.insert(
-            "background-color".into(),
-            values
-                .get_background()
-                .get_background_color()
-                .to_css_string(),
-        );
-        result.insert(
-            "font-size".into(),
-            values.slow_clone_font_size().to_css_string(),
-        );
-        result.insert(
-            "opacity".into(),
-            values.get_effects().get_opacity().to_string(),
-        );
+        insert_css!("font-size", values.slow_clone_font_size());
+        result.insert("opacity".into(), values.get_effects().get_opacity().to_string());
         result
     }
 }
@@ -2721,6 +2744,47 @@ mod tests {
         assert_eq!(stylo.last_recomputed_count(), 45);
         assert_eq!(style_value(&ui, elements[0], "color"), "rgb(0, 0, 255)");
         assert_eq!(style_value(&ui, inserted, "color"), "rgb(0, 0, 255)");
+    }
+
+    #[test]
+    fn stylo_exports_computed_box_geometry_without_re_resolving_css() {
+        let mut ui = UiModel::new();
+        let root = ui.create_root_deque().unwrap();
+        let element = ui.create_element(root, "section", End::Back).unwrap();
+
+        let mut stylo = StyloStyleEngine::new().unwrap();
+        stylo.add_stylesheet(
+            "section { box-sizing: border-box; position: absolute; width: 120px; height: 48px; min-width: 60px; max-width: 240px; margin: 4px 8px 12px 16px; padding: 2px 4px 6px 8px; border-width: 1px 2px 3px 4px; top: 10px; right: 11px; bottom: 12px; left: 13px; }",
+        );
+        run_style_pass(&mut stylo, &mut StyleCommitAdapter, &mut ui).unwrap();
+
+        let computed = ui.computed_styles(element).unwrap();
+        for (property, expected) in [
+            ("box-sizing", "border-box"),
+            ("position", "absolute"),
+            ("width", "120px"),
+            ("height", "48px"),
+            ("min-width", "60px"),
+            ("max-width", "240px"),
+            ("margin-top", "4px"),
+            ("margin-right", "8px"),
+            ("margin-bottom", "12px"),
+            ("margin-left", "16px"),
+            ("padding-top", "2px"),
+            ("padding-right", "4px"),
+            ("padding-bottom", "6px"),
+            ("padding-left", "8px"),
+            ("border-top-width", "1px"),
+            ("border-right-width", "2px"),
+            ("border-bottom-width", "3px"),
+            ("border-left-width", "4px"),
+            ("top", "10px"),
+            ("right", "11px"),
+            ("bottom", "12px"),
+            ("left", "13px"),
+        ] {
+            assert_eq!(computed.get(property).map(String::as_str), Some(expected), "{property}");
+        }
     }
 
     #[test]
