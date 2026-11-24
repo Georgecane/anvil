@@ -2,10 +2,10 @@ mod bridge;
 mod ecmascript;
 mod framework;
 mod host;
+mod layout;
 mod renderer;
 mod style;
 mod stylo;
-mod layout;
 mod text;
 mod ui;
 mod window;
@@ -16,6 +16,7 @@ pub use framework::{
     bootstrap_from_snapshot,
 };
 pub use host::HostRuntime;
+pub use layout::{LayoutNodeId, TaffyTreeProjection};
 pub use renderer::{
     GpuContext, GpuInitError, NativeRenderer, RenderElement, RenderInput, render_frame,
 };
@@ -24,7 +25,6 @@ pub use style::{
     run_style_pass,
 };
 pub use stylo::{StyloError, StyloStyleEngine};
-pub use layout::{LayoutNodeId, TaffyTreeProjection};
 pub use ui::{
     DequeHandle, ElementHandle, InitialDeque, InitialElement, LogicalProjection, UiElement,
     UiElementKind, UiError, UiModel,

@@ -72,11 +72,7 @@ impl taffy::TraversePartialTree for TaffyTreeProjection<'_> {
             .len()
     }
 
-    fn get_child_id(
-        &self,
-        parent_node_id: taffy::NodeId,
-        child_index: usize,
-    ) -> taffy::NodeId {
+    fn get_child_id(&self, parent_node_id: taffy::NodeId, child_index: usize) -> taffy::NodeId {
         let parent = self.handle_for_taffy_id(parent_node_id);
         let children = self.projection.children_of(parent);
         self.node_ids[&children[child_index]]
@@ -102,8 +98,14 @@ mod tests {
         let adapter = TaffyTreeProjection::new(ui.projection());
         let main_id = adapter.node_id(main).unwrap().0;
 
-        assert_eq!(adapter.element_handle(adapter.node_id(first).unwrap()), Some(first));
-        assert_eq!(adapter.element_handle(adapter.node_id(second).unwrap()), Some(second));
+        assert_eq!(
+            adapter.element_handle(adapter.node_id(first).unwrap()),
+            Some(first)
+        );
+        assert_eq!(
+            adapter.element_handle(adapter.node_id(second).unwrap()),
+            Some(second)
+        );
         assert_eq!(adapter.child_count(main_id), 2);
         let expected = adapter
             .projection()
