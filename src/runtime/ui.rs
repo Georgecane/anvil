@@ -886,6 +886,103 @@ impl UiModel {
         Ok(handles)
     }
 
+    /// Validates a batch of disjoint, non-root subtrees from one Deque without
+    /// constructing a full framework validation snapshot.
+    pub(crate) fn validate_remove_batch(&self, anchors: &[ElementHandle]) -> Result<(), UiError> {
+        if anchors.is_empty() {
+            return Err(UiError::InvalidRange);
+        }
+        let mut source = None;
+        let mut ranges = Vec::with_capacity(anchors.len());
+        for anchor in anchors {
+            let location = *self
+                .element_handles
+                .get(anchor)
+                .ok_or(UiError::UnknownElement(*anchor))?;
+            if source.is_some_and(|node| node != location.deque) {
+                return Err(UiError::InvalidRange);
+            }
+            source = Some(location.deque);
+            let node = self
+                .tree
+                .get(location.deque)
+                .ok_or(UiError::UnknownElement(*anchor))?;
+            if node.deque().ids().next_back() == Some(location.entry) {
+                return Err(UiError::InvalidRange);
+            }
+            ranges.push(
+                node.deque()
+                    .structural_range(location.entry)
+                    .ok_or(UiError::InvalidRange)?,
+            );
+        }
+        ranges.sort_unstable_by_key(|range| range.start);
+        if ranges
+            .windows(2)
+            .any(|pair| pair[0].start + pair[0].count > pair[1].start)
+        {
+            return Err(UiError::InvalidRange);
+        }
+        Ok(())
+    }
+
+    /// Applies disjoint removals from one Deque with one entry/index/hash rebuild.
+    /// Each logical removal still produces its own mutation-journal record.
+    pub(crate) fn remove_subtrees_batch(
+        &mut self,
+        anchors: &[ElementHandle],
+    ) -> Result<Vec<Vec<ElementHandle>>, UiError> {
+        self.validate_remove_batch(anchors)?;
+        let locations: Vec<_> = anchors
+            .iter()
+            .map(|anchor| (*anchor, self.element_handles[anchor]))
+            .collect();
+        let source = locations[0].1.deque;
+        let old_contexts: Vec<_> = anchors
+            .iter()
+            .map(|anchor| self.mutation_context(*anchor))
+            .collect();
+        let entry_ids: Vec<_> = locations
+            .iter()
+            .map(|(_, location)| location.entry)
+            .collect();
+        let removed = self
+            .tree
+            .get_mut(source)
+            .ok_or(UiError::InvalidRange)?
+            .deque_mut()
+            .drain_subtrees(&entry_ids)
+            .ok_or(UiError::InvalidRange)?;
+
+        let mut groups = Vec::with_capacity(removed.len());
+        for group in removed {
+            let mut handles = Vec::with_capacity(group.len());
+            for (entry_id, _) in group {
+                if let Some(handle) = self.entry_handles.remove(&(source, entry_id)) {
+                    self.element_handles.remove(&handle);
+                    handles.push(handle);
+                }
+            }
+            groups.push(handles);
+        }
+
+        let render_stack_changed = self.tree.reconcile_ghosts_for(source);
+        if render_stack_changed {
+            self.registry.refresh_render_stack(&self.tree);
+        }
+        for (index, anchor) in anchors.iter().enumerate() {
+            self.record_mutation(
+                UiMutationKind::Remove,
+                Some(*anchor),
+                groups[index].clone(),
+                old_contexts[index],
+                None,
+                vec![source],
+            );
+        }
+        Ok(groups)
+    }
+
     /// Removes the anchor and its complete subtree, inferred from the parallel range boundaries.
     pub fn remove_subtree(&mut self, anchor: ElementHandle) -> Result<Vec<ElementHandle>, UiError> {
         let loc = *self
@@ -950,6 +1047,120 @@ impl UiModel {
 
     pub fn remove_element(&mut self, handle: ElementHandle) -> Result<(), UiError> {
         self.remove_subtree(handle).map(|_| ())
+    }
+
+    pub(crate) fn validate_move_batch(
+        &self,
+        anchors: &[ElementHandle],
+        target: DequeHandle,
+    ) -> Result<(), UiError> {
+        if anchors.is_empty() {
+            return Err(UiError::InvalidRange);
+        }
+        let target_id = *self
+            .deque_handles
+            .get(&target)
+            .ok_or(UiError::UnknownDeque(target))?;
+        let mut source = None;
+        let mut ranges = Vec::with_capacity(anchors.len());
+        for anchor in anchors {
+            let location = *self
+                .element_handles
+                .get(anchor)
+                .ok_or(UiError::UnknownElement(*anchor))?;
+            if location.deque == target_id || source.is_some_and(|node| node != location.deque) {
+                return Err(UiError::InvalidRange);
+            }
+            source = Some(location.deque);
+            let node = self
+                .tree
+                .get(location.deque)
+                .ok_or(UiError::UnknownElement(*anchor))?;
+            if node.deque().ids().next_back() == Some(location.entry) {
+                return Err(UiError::InvalidRange);
+            }
+            ranges.push(
+                node.deque()
+                    .structural_range(location.entry)
+                    .ok_or(UiError::InvalidRange)?,
+            );
+        }
+        ranges.sort_unstable_by_key(|range| range.start);
+        if ranges
+            .windows(2)
+            .any(|pair| pair[0].start + pair[0].count > pair[1].start)
+        {
+            return Err(UiError::InvalidRange);
+        }
+        Ok(())
+    }
+
+    /// Moves disjoint subtrees from one source Deque in a single extraction and
+    /// one insertion. Mutation records and handle identity remain per element.
+    pub(crate) fn move_subtrees_batch(
+        &mut self,
+        anchors: &[ElementHandle],
+        target: DequeHandle,
+        target_end: End,
+    ) -> Result<Vec<Vec<ElementHandle>>, UiError> {
+        self.validate_move_batch(anchors, target)?;
+        let locations: Vec<_> = anchors
+            .iter()
+            .map(|anchor| (*anchor, self.element_handles[anchor]))
+            .collect();
+        let source = locations[0].1.deque;
+        let target_id = self.deque_handles[&target];
+        let old_contexts: Vec<_> = anchors
+            .iter()
+            .map(|anchor| self.mutation_context(*anchor))
+            .collect();
+        let entry_ids: Vec<_> = locations
+            .iter()
+            .map(|(_, location)| location.entry)
+            .collect();
+        let target_was_ghost = self
+            .tree
+            .get(target_id)
+            .ok_or(UiError::UnknownDeque(target))?
+            .deque()
+            .is_ghost();
+
+        let moved = self
+            .tree
+            .transfer_subtrees(source, target_id, &entry_ids, target_end)?;
+        let mut groups = Vec::with_capacity(moved.len());
+        for group in moved {
+            let mut handles = Vec::with_capacity(group.len());
+            for entry_id in group {
+                let handle = self
+                    .entry_handles
+                    .remove(&(source, entry_id))
+                    .ok_or(UiError::InvalidRange)?;
+                self.entry_handles.insert((target_id, entry_id), handle);
+                if let Some(location) = self.element_handles.get_mut(&handle) {
+                    location.deque = target_id;
+                }
+                handles.push(handle);
+            }
+            groups.push(handles);
+        }
+
+        let source_became_ghost = self.tree.reconcile_ghosts_for(source);
+        if target_was_ghost || source_became_ghost {
+            self.registry.refresh_render_stack(&self.tree);
+        }
+        for (index, anchor) in anchors.iter().enumerate() {
+            let new_context = self.mutation_context(*anchor);
+            self.record_mutation(
+                UiMutationKind::Move,
+                Some(*anchor),
+                groups[index].clone(),
+                old_contexts[index],
+                new_context,
+                vec![source, target_id],
+            );
+        }
+        Ok(groups)
     }
 
     /// Moves an anchor's complete subtree. Its range and source end are inferred
@@ -1049,7 +1260,39 @@ impl UiModel {
         }
         self.registry.prepare_render_pending()
     }
+    pub(crate) fn deque_handle_for_element(&self, handle: ElementHandle) -> Option<DequeHandle> {
+        let node = self.element_handles.get(&handle)?.deque;
+        self.deque_handles
+            .iter()
+            .find_map(|(handle, candidate)| (*candidate == node).then_some(*handle))
+    }
+
     pub(crate) fn batch_state(&self) -> UiBatchState {
+        let handles: Vec<_> = self.deque_handles.keys().copied().collect();
+        self.batch_state_for(&handles)
+    }
+
+    pub(crate) fn batch_state_for(&self, requested: &[DequeHandle]) -> UiBatchState {
+        let mut selected = std::collections::HashSet::new();
+        let mut pending = Vec::with_capacity(requested.len());
+        for handle in requested {
+            if let Some(node) = self.deque_handles.get(handle).copied() {
+                pending.push(node);
+            }
+        }
+        // Root removal clears every Deque in the attached branch. Including
+        // descendants here keeps validation exact without snapshotting unrelated
+        // branches of the canonical topology.
+        while let Some(id) = pending.pop() {
+            if !selected.insert(id) {
+                continue;
+            }
+            if let Some(node) = self.tree.get(id) {
+                pending.extend(node.left());
+                pending.extend(node.right());
+            }
+        }
+
         let mut deques = HashMap::new();
         let mut subtree_spans = HashMap::new();
         let mut sides = HashMap::new();
@@ -1058,10 +1301,13 @@ impl UiModel {
         let reverse_deques: HashMap<_, _> = self
             .deque_handles
             .iter()
+            .filter(|(_, node)| selected.contains(node))
             .map(|(handle, node)| (*node, *handle))
             .collect();
         for (handle, node_id) in &self.deque_handles {
-            if let Some(node) = self.tree.get(*node_id) {
+            if selected.contains(node_id)
+                && let Some(node) = self.tree.get(*node_id)
+            {
                 let mut contents = VecDeque::new();
                 for entry in node.deque().ids() {
                     if let Some(element_handle) =

@@ -368,6 +368,42 @@ impl<T> DequeTree<T> {
             .ok_or(TreeError::InvalidTopology)
     }
 
+    pub(crate) fn transfer_subtrees(
+        &mut self,
+        source: NodeId,
+        target: NodeId,
+        anchors: &[u64],
+        target_end: End,
+    ) -> Result<Vec<Vec<u64>>, TreeError> {
+        if self.get(source).is_none() || self.get(target).is_none() {
+            return Err(TreeError::InvalidNode(source));
+        }
+        if source == target {
+            return Err(TreeError::InvalidTopology);
+        }
+        let (source_slot, target_slot) = if source.index < target.index {
+            let (left, right) = self.slots.split_at_mut(target.index as usize);
+            (&mut left[source.index as usize], &mut right[0])
+        } else {
+            let (left, right) = self.slots.split_at_mut(source.index as usize);
+            (&mut right[0], &mut left[target.index as usize])
+        };
+        if source_slot.generation != source.generation
+            || target_slot.generation != target.generation
+        {
+            return Err(TreeError::InvalidTopology);
+        }
+        let (Some(source_node), Some(target_node)) =
+            (source_slot.node.as_mut(), target_slot.node.as_mut())
+        else {
+            return Err(TreeError::InvalidTopology);
+        };
+        source_node
+            .deque
+            .transfer_subtrees_to(&mut target_node.deque, anchors, target_end)
+            .ok_or(TreeError::InvalidTopology)
+    }
+
     /// Reconciles only the changed Deque and its same-depth sibling.
     /// This keeps ordinary mutations local instead of rescanning the DequeTree.
     pub fn reconcile_ghosts_for(&mut self, id: NodeId) -> bool {

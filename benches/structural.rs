@@ -166,6 +166,55 @@ fn report_batch(
     println!("{label:58} median={median:>11.2} ns/commit  best={best:>11.2} ns/commit");
 }
 
+fn make_structural_commit_fixture(
+    sibling_count: usize,
+    batch_size: usize,
+    moving: bool,
+) -> (UiModel, CommitAdapter, FrameworkCommit) {
+    let mut ui = UiModel::new();
+    let mut adapter = CommitAdapter::new();
+    let mut initial = FrameworkCommit::new();
+    initial.push(FrameworkOperation::CreateRootDeque {
+        id: FrameworkDequeId(1),
+    });
+    initial.push(FrameworkOperation::CreateChildDeque {
+        id: FrameworkDequeId(2),
+        parent: FrameworkDequeId(1),
+        side: anvil::deque_tree::ChildSide::Left,
+    });
+    initial.push(FrameworkOperation::CreateElement {
+        id: FrameworkElementId(1),
+        deque: FrameworkDequeId(1),
+        tag: "main".into(),
+        end: End::Back,
+    });
+    for index in 0..sibling_count {
+        initial.push(FrameworkOperation::CreateElement {
+            id: FrameworkElementId(10_000 + index as u64),
+            deque: FrameworkDequeId(1),
+            tag: "span".into(),
+            end: End::Front,
+        });
+    }
+    adapter.apply_commit(initial, &mut ui).unwrap();
+    ui.prepare_render();
+
+    let mut commit = FrameworkCommit::new();
+    for index in 0..batch_size {
+        let anchor = FrameworkElementId(10_000 + index as u64);
+        if moving {
+            commit.push(FrameworkOperation::MoveSubtree {
+                anchor,
+                target: FrameworkDequeId(2),
+                target_end: End::Back,
+            });
+        } else {
+            commit.push(FrameworkOperation::RemoveSubtree { anchor });
+        }
+    }
+    (ui, adapter, commit)
+}
+
 fn main() {
     println!("Anvil structural mutation benchmarks");
     println!("target={} profile=bench", std::env::consts::ARCH);
@@ -198,6 +247,23 @@ fn main() {
                     ),
                     10,
                     || make_batch_fixture(sibling_count, batch_size, end),
+                );
+            }
+            println!();
+        }
+    }
+
+    println!("Framework structural commits (including validation and UI bookkeeping):");
+    for moving in [false, true] {
+        for sibling_count in [128usize, 1_024, 4_096] {
+            for batch_size in [1usize, 8, 32] {
+                report_batch(
+                    &format!(
+                        "FrameworkCommit {} / siblings={sibling_count} batch={batch_size}",
+                        if moving { "move" } else { "remove" }
+                    ),
+                    5,
+                    || make_structural_commit_fixture(sibling_count, batch_size, moving),
                 );
             }
             println!();

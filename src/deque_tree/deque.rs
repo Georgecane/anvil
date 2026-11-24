@@ -10,6 +10,8 @@ struct Entry<T> {
     value: T,
 }
 
+type ExtractedSubtrees<T> = Vec<Vec<(Entry<T>, usize)>>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum End {
     Front,
@@ -459,6 +461,144 @@ impl<T> Deque<T> {
         )
     }
 
+    fn extract_subtrees(&mut self, anchors: &[u64]) -> Option<ExtractedSubtrees<T>> {
+        if anchors.is_empty() {
+            return Some(Vec::new());
+        }
+
+        let mut ranges: Vec<_> = anchors
+            .iter()
+            .enumerate()
+            .map(|(input_index, anchor)| {
+                self.structural_range(*anchor)
+                    .map(|range| (range, input_index))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        ranges.sort_unstable_by_key(|(range, _)| range.start);
+        if ranges
+            .windows(2)
+            .any(|pair| pair[0].0.start + pair[0].0.count > pair[1].0.start)
+        {
+            return None;
+        }
+
+        let mut removed: Vec<Vec<(Entry<T>, usize)>> =
+            (0..anchors.len()).map(|_| Vec::new()).collect();
+        let old_entries = std::mem::take(&mut self.entries);
+        let old_spans = std::mem::take(&mut self.subtree_spans);
+        let total_removed: usize = ranges.iter().map(|(range, _)| range.count).sum();
+        let mut removed_prefix = Vec::with_capacity(ranges.len() + 1);
+        removed_prefix.push(0usize);
+        for (range, _) in &ranges {
+            removed_prefix.push(removed_prefix.last().copied().unwrap_or_default() + range.count);
+        }
+        self.entries = VecDeque::with_capacity(old_entries.len() - total_removed);
+        self.subtree_spans = VecDeque::with_capacity(old_spans.len() - total_removed);
+
+        let mut range_index = 0;
+        for (old_index, (entry, span)) in old_entries.into_iter().zip(old_spans).enumerate() {
+            while range_index < ranges.len()
+                && old_index >= ranges[range_index].0.start + ranges[range_index].0.count
+            {
+                range_index += 1;
+            }
+
+            if range_index < ranges.len()
+                && old_index >= ranges[range_index].0.start
+                && old_index < ranges[range_index].0.start + ranges[range_index].0.count
+            {
+                removed[ranges[range_index].1].push((entry, span));
+                continue;
+            }
+
+            let old_start = old_index + 1 - span;
+            let first_contained = ranges.partition_point(|(range, _)| range.start < old_start);
+            let after_last_contained =
+                ranges.partition_point(|(range, _)| range.start + range.count <= old_index + 1);
+            let removed_from_subtree = if after_last_contained > first_contained {
+                removed_prefix[after_last_contained] - removed_prefix[first_contained]
+            } else {
+                0
+            };
+            self.entries.push_back(entry);
+            self.subtree_spans.push_back(span - removed_from_subtree);
+        }
+
+        self.refresh_hash();
+        Some(removed)
+    }
+
+    /// Removes several disjoint subtrees from the original Deque state in one
+    /// pass. Returned groups follow the caller's anchor order.
+    pub(crate) fn drain_subtrees(&mut self, anchors: &[u64]) -> Option<Vec<Vec<(u64, T)>>> {
+        self.extract_subtrees(anchors).map(|groups| {
+            groups
+                .into_iter()
+                .map(|group| {
+                    group
+                        .into_iter()
+                        .map(|(entry, _)| (entry.id, entry.value))
+                        .collect()
+                })
+                .collect()
+        })
+    }
+
+    /// Transfers disjoint subtrees from one Deque with one rebuild on each side.
+    /// The result contains stable entry IDs grouped in caller operation order.
+    pub(crate) fn transfer_subtrees_to(
+        &mut self,
+        target: &mut Self,
+        anchors: &[u64],
+        target_end: End,
+    ) -> Option<Vec<Vec<u64>>> {
+        if std::ptr::eq(self, target) {
+            return None;
+        }
+        let groups = self.extract_subtrees(anchors)?;
+        let moved_ids: Vec<Vec<u64>> = groups
+            .iter()
+            .map(|group| group.iter().map(|(entry, _)| entry.id).collect())
+            .collect();
+        let total_count: usize = groups.iter().map(Vec::len).sum();
+        let target_old_len = target.entries.len();
+
+        match target_end {
+            End::Front => {
+                for group in groups {
+                    if let Some(root_span) = target.subtree_spans.back_mut() {
+                        *root_span += group.len();
+                    }
+                    for (entry, span) in group.into_iter().rev() {
+                        target.entries.push_front(entry);
+                        target.subtree_spans.push_front(span);
+                    }
+                }
+            }
+            End::Back => {
+                let mut inserted = 0;
+                for group in groups {
+                    let group_len = group.len();
+                    for (entry, mut span) in group {
+                        let preceding_len = target_old_len + inserted;
+                        if preceding_len > 0 && span == group_len {
+                            span += preceding_len;
+                        }
+                        target.entries.push_back(entry);
+                        target.subtree_spans.push_back(span);
+                    }
+                    inserted += group_len;
+                }
+            }
+        }
+
+        if total_count > 0 {
+            target.ghost = false;
+            target.refresh_hash();
+        }
+        Some(moved_ids)
+    }
+
     pub fn transfer_subtree_to(
         &mut self,
         target: &mut Self,
@@ -568,6 +708,67 @@ impl<T> Deque<T> {
 #[cfg(test)]
 mod tests {
     use super::{Deque, End};
+
+    #[test]
+    fn batch_extraction_removes_disjoint_subtrees_and_rebuilds_spans_once() {
+        let mut deque = Deque::new();
+        let first = deque.push_back_with_span("first", 1).unwrap();
+        let second = deque.push_back_with_span("second", 1).unwrap();
+        let parent = deque.push_back_with_span("parent", 3).unwrap();
+        let third = deque.push_back_with_span("third", 1).unwrap();
+        let root = deque.push_back_with_span("root", 5).unwrap();
+
+        let removed = deque.drain_subtrees(&[first, third]).unwrap();
+        assert_eq!(removed[0], vec![(first, "first")]);
+        assert_eq!(removed[1], vec![(third, "third")]);
+        assert_eq!(deque.ids().collect::<Vec<_>>(), vec![second, parent, root]);
+        assert_eq!(deque.subtree_spans().collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert!(deque.validate_structure());
+    }
+
+    #[test]
+    fn batch_transfer_preserves_sequential_front_and_back_order() {
+        for end in [End::Front, End::Back] {
+            let mut source = Deque::new();
+            let first = source.push_back_with_span("first", 1).unwrap();
+            let second = source.push_back_with_span("second", 1).unwrap();
+            let root = source.push_back_with_span("root", 3).unwrap();
+            let mut target = Deque::new();
+            let target_root = target.push_back_with_span("target", 1).unwrap();
+
+            source
+                .transfer_subtrees_to(&mut target, &[first, second], end)
+                .unwrap();
+
+            let expected = match end {
+                End::Front => vec![second, first, target_root],
+                End::Back => vec![target_root, first, second],
+            };
+            assert_eq!(target.ids().collect::<Vec<_>>(), expected);
+            assert_eq!(source.ids().collect::<Vec<_>>(), vec![root]);
+            assert!(source.validate_structure());
+            assert!(target.validate_structure());
+        }
+    }
+
+    #[test]
+    fn batch_front_transfer_into_an_empty_target_builds_the_same_parent_spans_as_sequential_moves()
+    {
+        let mut source = Deque::new();
+        let first = source.push_back_with_span("first", 1).unwrap();
+        let second = source.push_back_with_span("second", 1).unwrap();
+        source.push_back_with_span("source-root", 3).unwrap();
+        let mut target = Deque::new();
+
+        source
+            .transfer_subtrees_to(&mut target, &[first, second], End::Front)
+            .unwrap();
+
+        assert_eq!(target.ids().collect::<Vec<_>>(), vec![second, first]);
+        assert_eq!(target.subtree_spans().collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(target.logical_parent(second), Some(first));
+        assert!(target.validate_structure());
+    }
 
     #[test]
     fn structural_transfer_covers_front_and_back_source_and_target_ends() {

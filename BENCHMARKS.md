@@ -94,7 +94,7 @@ Run the structural suite with:
 cargo bench --bench structural
 ~~~
 
-The suite measures interior `UiModel.move_subtree` and `UiModel.remove_subtree` operations using fresh fixtures per timed operation. It also measures complete `FrameworkCommit` batches containing 1, 8, or 32 consecutive element creations in one Deque. Fixture setup is excluded from timing; commit timings include validation, UI mutation, mutation-journal recording, and Registry updates.
+The suite measures interior `UiModel.move_subtree` and `UiModel.remove_subtree` operations using fresh fixtures per timed operation. It also measures complete `FrameworkCommit` batches containing 1, 8, or 32 consecutive creates, removes, or moves in one Deque. Fixture setup is excluded from timing; commit timings include validation, UI mutation, mutation-journal recording, and Registry updates.
 
 ### Move one interior subtree
 
@@ -156,14 +156,30 @@ Current median microseconds per complete commit. Back insertion creates a nested
 | 4,096 | 8 | 352.85 µs |
 | 4,096 | 32 | 371.12 µs |
 
+### Framework batch structural commits
+
+Median microseconds per complete Framework commit with 4,096 source siblings. The before column is the original sequential path measured before the batch implementation; after uses the structural batch path. Each fixture is recreated outside the timed region. Move batches share one source, target, and insertion end; remove batches share one source Deque.
+
+| Operation | Items | Before | After | Speedup |
+|---|---:|---:|---:|---:|
+| Remove | 1 | 2,033 µs | 307 µs | 6.6x |
+| Remove | 8 | 3,946 µs | 449 µs | 8.8x |
+| Remove | 32 | 9,998 µs | 661 µs | 15.1x |
+| Move | 1 | 2,092 µs | 387 µs | 5.4x |
+| Move | 8 | 3,890 µs | 551 µs | 7.1x |
+| Move | 32 | 9,739 µs | 597 µs | 16.3x |
+
+The specialized path validates non-overlapping ranges against the live Deque, extracts all subtrees in one pass, and rebuilds the source indexes/hash once. Moves also insert all extracted groups and rebuild the target once. Every operation still gets its own mutation-journal record and stable Framework/native handle mapping. Single root operations, mixed commits, and batches spanning multiple source Deques fall back to the general validator and sequential path. Measurements vary with laptop load; compare on the same machine and toolchain.
+
 ### What changed
 
 - Mutation journal entries retain only old/new parent identities. They no longer clone full sibling lists before structural operations.
 - Stylo derives affected sibling context from the post-mutation projection. Structural invalidation still covers current siblings and ancestors; removed nodes are handled through the removed-state list. Regression tests cover `:nth-child`, `:has(+ ...)`, and sibling selectors across ghost roots.
 - Deque extraction adjusts ancestor spans during the same pass that rebuilds entry indexes, parent indexes, and the identity hash, eliminating a separate suffix scan.
 - Framework commits coalesce adjacent `CreateElement` and `CreateText` operations when they target the same Deque and insertion end. `push_front_many` and `push_back_many` preserve sequential ordering while rebuilding Deque indexes and identity hash once. Individual handles and mutation-journal entries are still emitted for every create operation.
+- Consecutive non-overlapping `RemoveSubtree` operations from one Deque and `MoveSubtree` operations sharing one source, target, and end are applied as structural batches. The source is compacted once; a move's target is refreshed once. Specialized validation avoids copying the full UI snapshot for these common pure structural commits. General mixed and cross-source commits retain the existing full validator.
 
-The remaining growth for a single interior move is expected from the contiguous `VecDeque` representation: extracting an interior interval shifts entries, updates the derived ID-to-index map, and recomputes the order-sensitive Deque identity hash. This work is not yet sublinear. Batch creation, however, now amortizes that rebuild across adjacent operations.
+The remaining growth for a single interior move is expected from the contiguous `VecDeque` representation: extracting an interior interval shifts entries, updates the derived ID-to-index map, and recomputes the order-sensitive Deque identity hash. This work is not yet sublinear. Batch creation, removal, and movement amortize that rebuild across adjacent operations.
 
 ## Interpretation
 

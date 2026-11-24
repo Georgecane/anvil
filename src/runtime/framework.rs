@@ -373,6 +373,193 @@ impl CommitAdapter {
         Ok(())
     }
 
+    fn validate_remove_only_batch(
+        &self,
+        commit: &FrameworkCommit,
+        ui: &UiModel,
+    ) -> Result<bool, FrameworkError> {
+        if commit.operations().is_empty()
+            || !commit
+                .operations()
+                .iter()
+                .all(|operation| matches!(operation, FrameworkOperation::RemoveSubtree { .. }))
+        {
+            return Ok(false);
+        }
+        let anchors: Vec<_> = commit
+            .operations()
+            .iter()
+            .map(|operation| match operation {
+                FrameworkOperation::RemoveSubtree { anchor } => self
+                    .elements
+                    .get(anchor)
+                    .copied()
+                    .ok_or(FrameworkError::UnknownElement(*anchor)),
+                _ => unreachable!(),
+            })
+            .collect::<Result<_, _>>()?;
+        match ui.validate_remove_batch(&anchors) {
+            Ok(()) => Ok(true),
+            Err(UiError::InvalidRange) => Ok(false),
+            Err(error) => Err(FrameworkError::Ui(error)),
+        }
+    }
+
+    fn validate_move_only_batch(
+        &self,
+        commit: &FrameworkCommit,
+        ui: &UiModel,
+    ) -> Result<bool, FrameworkError> {
+        if commit.operations().is_empty() {
+            return Ok(false);
+        }
+        let Some(FrameworkOperation::MoveSubtree {
+            target, target_end, ..
+        }) = commit.operations().first()
+        else {
+            return Ok(false);
+        };
+        if !commit.operations().iter().all(|operation| {
+            matches!(
+                operation,
+                FrameworkOperation::MoveSubtree {
+                    target: candidate_target,
+                    target_end: candidate_end,
+                    ..
+                } if candidate_target == target && candidate_end == target_end
+            )
+        }) {
+            return Ok(false);
+        }
+        let anchors: Vec<_> = commit
+            .operations()
+            .iter()
+            .map(|operation| match operation {
+                FrameworkOperation::MoveSubtree { anchor, .. } => self
+                    .elements
+                    .get(anchor)
+                    .copied()
+                    .ok_or(FrameworkError::UnknownElement(*anchor)),
+                _ => unreachable!(),
+            })
+            .collect::<Result<_, _>>()?;
+        let target_handle = *self
+            .deques
+            .get(target)
+            .ok_or(FrameworkError::UnknownDeque(*target))?;
+        match ui.validate_move_batch(&anchors, target_handle) {
+            Ok(()) => Ok(true),
+            Err(UiError::InvalidRange) => Ok(false),
+            Err(error) => Err(FrameworkError::Ui(error)),
+        }
+    }
+
+    fn apply_move_batch(
+        &mut self,
+        first: FrameworkElementId,
+        target: FrameworkDequeId,
+        target_end: End,
+        operations: &mut std::iter::Peekable<std::vec::IntoIter<FrameworkOperation>>,
+        ui: &mut UiModel,
+    ) -> Result<(), FrameworkError> {
+        let first_handle = *self
+            .elements
+            .get(&first)
+            .ok_or(FrameworkError::UnknownElement(first))?;
+        let source = ui
+            .deque_handle_for_element(first_handle)
+            .ok_or(FrameworkError::UnknownElement(first))?;
+        let target_handle = *self
+            .deques
+            .get(&target)
+            .ok_or(FrameworkError::UnknownDeque(target))?;
+        let mut handles = vec![first_handle];
+        while let Some(FrameworkOperation::MoveSubtree {
+            anchor,
+            target: next_target,
+            target_end: next_end,
+        }) = operations.peek()
+        {
+            if *next_target != target || *next_end != target_end {
+                break;
+            }
+            let Some(handle) = self.elements.get(anchor).copied() else {
+                break;
+            };
+            if ui.deque_handle_for_element(handle) != Some(source) {
+                break;
+            }
+            handles.push(handle);
+            operations.next();
+        }
+
+        if handles.len() == 1 {
+            ui.move_subtree(first_handle, target_handle, target_end)?;
+        } else {
+            match ui.move_subtrees_batch(&handles, target_handle, target_end) {
+                Ok(_) => {}
+                Err(UiError::InvalidRange) => {
+                    // Nested ranges can be valid in operation order even though
+                    // they overlap in the initial Deque snapshot.
+                    for handle in handles {
+                        ui.move_subtree(handle, target_handle, target_end)?;
+                    }
+                }
+                Err(error) => return Err(FrameworkError::Ui(error)),
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_remove_batch(
+        &mut self,
+        first: FrameworkElementId,
+        operations: &mut std::iter::Peekable<std::vec::IntoIter<FrameworkOperation>>,
+        ui: &mut UiModel,
+    ) -> Result<(), FrameworkError> {
+        let first_handle = *self
+            .elements
+            .get(&first)
+            .ok_or(FrameworkError::UnknownElement(first))?;
+        let source = ui
+            .deque_handle_for_element(first_handle)
+            .ok_or(FrameworkError::UnknownElement(first))?;
+        let mut handles = vec![first_handle];
+        while let Some(FrameworkOperation::RemoveSubtree { anchor }) = operations.peek() {
+            let Some(handle) = self.elements.get(anchor).copied() else {
+                break;
+            };
+            if ui.deque_handle_for_element(handle) != Some(source) {
+                break;
+            }
+            operations.next();
+            handles.push(handle);
+        }
+
+        if handles.len() == 1 {
+            let removed = ui.remove_subtree(handles[0])?;
+            self.remove_native_elements(&removed);
+        } else {
+            match ui.remove_subtrees_batch(&handles) {
+                Ok(removed) => {
+                    for group in removed {
+                        self.remove_native_elements(&group);
+                    }
+                }
+                Err(UiError::InvalidRange) => {
+                    // Overlapping ranges may still be valid when earlier
+                    // operations remove descendants before their ancestors.
+                    for handle in handles {
+                        let removed = ui.remove_subtree(handle)?;
+                        self.remove_native_elements(&removed);
+                    }
+                }
+                Err(error) => return Err(FrameworkError::Ui(error)),
+            }
+        }
+        Ok(())
+    }
+
     fn validate(&self, commit: &FrameworkCommit, ui: &UiModel) -> Result<(), FrameworkError> {
         if !commit.operations().iter().any(|operation| {
             matches!(
@@ -384,7 +571,32 @@ impl CommitAdapter {
         }
 
         use std::collections::VecDeque;
-        let native = ui.batch_state();
+        let mut required_deques = Vec::new();
+        for operation in commit.operations() {
+            match operation {
+                FrameworkOperation::RemoveSubtree { anchor } => {
+                    if let Some(handle) = self.elements.get(anchor)
+                        && let Some(deque) = ui.deque_handle_for_element(*handle)
+                    {
+                        required_deques.push(deque);
+                    }
+                }
+                FrameworkOperation::MoveSubtree { anchor, target, .. } => {
+                    if let Some(handle) = self.elements.get(anchor)
+                        && let Some(deque) = ui.deque_handle_for_element(*handle)
+                    {
+                        required_deques.push(deque);
+                    }
+                    if let Some(deque) = self.deques.get(target) {
+                        required_deques.push(*deque);
+                    }
+                }
+                _ => {}
+            }
+        }
+        required_deques.sort_unstable_by_key(|handle| handle.0);
+        required_deques.dedup();
+        let native = ui.batch_state_for(&required_deques);
         let reverse_deques = &self.reverse_deques;
         let reverse_elements = &self.reverse_elements;
 
@@ -725,7 +937,15 @@ impl FrameworkAdapter for CommitAdapter {
         ui: &mut UiModel,
     ) -> Result<(), FrameworkError> {
         self.prune_stale_references(&commit, ui);
-        self.validate(&commit, ui)?;
+        let remove_batch = self.validate_remove_only_batch(&commit, ui)?;
+        let move_batch = if remove_batch {
+            false
+        } else {
+            self.validate_move_only_batch(&commit, ui)?
+        };
+        if !remove_batch && !move_batch {
+            self.validate(&commit, ui)?;
+        }
         let mut operations = commit.operations.into_iter().peekable();
         while let Some(op) = operations.next() {
             match op {
@@ -788,15 +1008,14 @@ impl FrameworkAdapter for CommitAdapter {
                     ui.remove_style(self.elements[&id], &key)?
                 }
                 FrameworkOperation::RemoveSubtree { anchor } => {
-                    let removed = ui.remove_subtree(self.elements[&anchor])?;
-                    self.remove_native_elements(&removed);
+                    self.apply_remove_batch(anchor, &mut operations, ui)?;
                 }
                 FrameworkOperation::MoveSubtree {
                     anchor,
                     target,
                     target_end,
                 } => {
-                    ui.move_subtree(self.elements[&anchor], self.deques[&target], target_end)?;
+                    self.apply_move_batch(anchor, target, target_end, &mut operations, ui)?;
                 }
             }
         }
@@ -875,6 +1094,184 @@ mod tests {
             Some("batched text")
         );
         assert_eq!(ui.element(third).unwrap().tag, "aside");
+    }
+
+    #[test]
+    fn consecutive_moves_from_one_deque_are_batched_and_preserve_target_order() {
+        let mut ui = UiModel::new();
+        let mut adapter = CommitAdapter::new();
+        let mut setup = FrameworkCommit::new();
+        setup.push(FrameworkOperation::CreateRootDeque {
+            id: FrameworkDequeId(1),
+        });
+        setup.push(FrameworkOperation::CreateChildDeque {
+            id: FrameworkDequeId(2),
+            parent: FrameworkDequeId(1),
+            side: crate::deque_tree::ChildSide::Left,
+        });
+        setup.push(FrameworkOperation::CreateElement {
+            id: FrameworkElementId(100),
+            deque: FrameworkDequeId(1),
+            tag: "main".into(),
+            end: End::Back,
+        });
+        for id in 1..=3 {
+            setup.push(FrameworkOperation::CreateElement {
+                id: FrameworkElementId(id),
+                deque: FrameworkDequeId(1),
+                tag: "span".into(),
+                end: End::Front,
+            });
+        }
+        adapter.apply_commit(setup, &mut ui).unwrap();
+        ui.prepare_render();
+        let parent = adapter.native_element(FrameworkElementId(100)).unwrap();
+        let original: Vec<_> = (1..=3)
+            .map(|id| adapter.native_element(FrameworkElementId(id)).unwrap())
+            .collect();
+
+        let mut move_commit = FrameworkCommit::new();
+        for id in 1..=3 {
+            move_commit.push(FrameworkOperation::MoveSubtree {
+                anchor: FrameworkElementId(id),
+                target: FrameworkDequeId(2),
+                target_end: End::Back,
+            });
+        }
+        adapter.apply_commit(move_commit, &mut ui).unwrap();
+
+        assert_eq!(ui.logical_children(parent), vec![original[2]]);
+        assert_eq!(ui.logical_parent(original[2]), Some(parent));
+        assert_eq!(ui.logical_parent(original[1]), Some(original[2]));
+        assert_eq!(ui.logical_parent(original[0]), Some(original[1]));
+        for (index, handle) in original.iter().enumerate() {
+            assert_eq!(
+                adapter.native_element(FrameworkElementId(index as u64 + 1)),
+                Some(*handle)
+            );
+        }
+    }
+
+    #[test]
+    fn nested_move_batch_falls_back_to_sequential_semantics_when_ranges_overlap() {
+        let mut ui = UiModel::new();
+        let mut adapter = CommitAdapter::new();
+        let mut setup = FrameworkCommit::new();
+        setup.push(FrameworkOperation::CreateRootDeque {
+            id: FrameworkDequeId(1),
+        });
+        setup.push(FrameworkOperation::CreateChildDeque {
+            id: FrameworkDequeId(2),
+            parent: FrameworkDequeId(1),
+            side: crate::deque_tree::ChildSide::Left,
+        });
+        for (id, tag) in [(1, "i"), (2, "section"), (100, "main")] {
+            setup.push(FrameworkOperation::CreateElement {
+                id: FrameworkElementId(id),
+                deque: FrameworkDequeId(1),
+                tag: tag.into(),
+                end: End::Back,
+            });
+        }
+        adapter.apply_commit(setup, &mut ui).unwrap();
+        ui.prepare_render();
+        let leaf = adapter.native_element(FrameworkElementId(1)).unwrap();
+        let parent = adapter.native_element(FrameworkElementId(2)).unwrap();
+        let root = adapter.native_element(FrameworkElementId(100)).unwrap();
+
+        let mut move_commit = FrameworkCommit::new();
+        for id in [1, 2] {
+            move_commit.push(FrameworkOperation::MoveSubtree {
+                anchor: FrameworkElementId(id),
+                target: FrameworkDequeId(2),
+                target_end: End::Back,
+            });
+        }
+        adapter.apply_commit(move_commit, &mut ui).unwrap();
+        assert_eq!(ui.logical_parent(parent), Some(root));
+        assert_eq!(ui.logical_parent(leaf), Some(parent));
+    }
+
+    #[test]
+    fn nested_remove_batch_falls_back_to_sequential_semantics_when_ranges_overlap() {
+        let mut ui = UiModel::new();
+        let root_deque = ui.create_root_deque().unwrap();
+        let mut adapter = CommitAdapter::new();
+        adapter
+            .bind_existing_root(FrameworkDequeId(1), &ui)
+            .unwrap();
+        let mut setup = FrameworkCommit::new();
+        for (id, tag) in [(1, "i"), (2, "section"), (100, "main")] {
+            setup.push(FrameworkOperation::CreateElement {
+                id: FrameworkElementId(id),
+                deque: FrameworkDequeId(1),
+                tag: tag.into(),
+                end: End::Back,
+            });
+        }
+        adapter.apply_commit(setup, &mut ui).unwrap();
+        ui.prepare_render();
+        let leaf = adapter.native_element(FrameworkElementId(1)).unwrap();
+        let parent = adapter.native_element(FrameworkElementId(2)).unwrap();
+        let root = adapter.native_element(FrameworkElementId(100)).unwrap();
+
+        let mut remove = FrameworkCommit::new();
+        remove.push(FrameworkOperation::RemoveSubtree {
+            anchor: FrameworkElementId(1),
+        });
+        remove.push(FrameworkOperation::RemoveSubtree {
+            anchor: FrameworkElementId(2),
+        });
+        adapter.apply_commit(remove, &mut ui).unwrap();
+        assert!(ui.element(leaf).is_none());
+        assert!(ui.element(parent).is_none());
+        assert!(ui.element(root).is_some());
+        assert!(ui.deque_id(root_deque).is_some());
+    }
+
+    #[test]
+    fn consecutive_removals_from_one_deque_are_batched_and_keep_framework_mappings_consistent() {
+        let mut ui = UiModel::new();
+        let root = ui.create_root_deque().unwrap();
+        let mut adapter = CommitAdapter::new();
+        adapter
+            .bind_existing_root(FrameworkDequeId(1), &ui)
+            .unwrap();
+
+        let mut setup = FrameworkCommit::new();
+        setup.push(FrameworkOperation::CreateElement {
+            id: FrameworkElementId(100),
+            deque: FrameworkDequeId(1),
+            tag: "main".into(),
+            end: End::Back,
+        });
+        for id in 1..=3 {
+            setup.push(FrameworkOperation::CreateElement {
+                id: FrameworkElementId(id),
+                deque: FrameworkDequeId(1),
+                tag: "span".into(),
+                end: End::Front,
+            });
+        }
+        adapter.apply_commit(setup, &mut ui).unwrap();
+        ui.prepare_render();
+        let parent = adapter.native_element(FrameworkElementId(100)).unwrap();
+        assert_eq!(ui.logical_children(parent).len(), 3);
+
+        let mut remove = FrameworkCommit::new();
+        for id in 1..=3 {
+            remove.push(FrameworkOperation::RemoveSubtree {
+                anchor: FrameworkElementId(id),
+            });
+        }
+        adapter.apply_commit(remove, &mut ui).unwrap();
+
+        assert!(ui.logical_children(parent).is_empty());
+        for id in 1..=3 {
+            assert!(adapter.native_element(FrameworkElementId(id)).is_none());
+        }
+        assert!(ui.deque_id(root).is_some());
+        assert!(ui.element(parent).is_some());
     }
 
     #[test]
