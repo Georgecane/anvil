@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="logo.jpeg" alt="Anvil logo" width="180" />
+  <img src="logo.jpeg" alt="Anvil logo" width="360" />
   <h1>Anvil</h1>
   <p><strong>A native UI runtime built around a canonical Deque Tree.</strong></p>
   <p>Rust · JavaScript · CSS · WGPU · Winit</p>
