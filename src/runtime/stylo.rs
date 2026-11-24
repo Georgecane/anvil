@@ -1552,37 +1552,37 @@ impl StyloStyleEngine {
         }
 
         insert_css!("display", values.get_box().get_display());
-        insert_css!("box-sizing", values.clone_box_sizing());
-        insert_css!("position", values.clone_position());
+        insert_css!("box-sizing", values.slow_clone_box_sizing());
+        insert_css!("position", values.get_box().get_position());
 
         // Physical dimensions and edges are copied from Stylo's computed
         // values. This adapter does not parse declarations or resolve CSS.
-        insert_css!("width", values.clone_width());
-        insert_css!("height", values.clone_height());
-        insert_css!("min-width", values.clone_min_width());
-        insert_css!("min-height", values.clone_min_height());
-        insert_css!("max-width", values.clone_max_width());
-        insert_css!("max-height", values.clone_max_height());
+        insert_css!("width", values.slow_clone_width());
+        insert_css!("height", values.slow_clone_height());
+        insert_css!("min-width", values.slow_clone_min_width());
+        insert_css!("min-height", values.slow_clone_min_height());
+        insert_css!("max-width", values.slow_clone_max_width());
+        insert_css!("max-height", values.slow_clone_max_height());
 
-        insert_css!("margin-top", values.clone_margin_top());
-        insert_css!("margin-right", values.clone_margin_right());
-        insert_css!("margin-bottom", values.clone_margin_bottom());
-        insert_css!("margin-left", values.clone_margin_left());
+        insert_css!("margin-top", values.slow_clone_margin_top());
+        insert_css!("margin-right", values.slow_clone_margin_right());
+        insert_css!("margin-bottom", values.slow_clone_margin_bottom());
+        insert_css!("margin-left", values.slow_clone_margin_left());
 
-        insert_css!("padding-top", values.clone_padding_top());
-        insert_css!("padding-right", values.clone_padding_right());
-        insert_css!("padding-bottom", values.clone_padding_bottom());
-        insert_css!("padding-left", values.clone_padding_left());
+        insert_css!("padding-top", values.slow_clone_padding_top());
+        insert_css!("padding-right", values.slow_clone_padding_right());
+        insert_css!("padding-bottom", values.slow_clone_padding_bottom());
+        insert_css!("padding-left", values.slow_clone_padding_left());
 
-        insert_css!("border-top-width", values.clone_border_top_width());
-        insert_css!("border-right-width", values.clone_border_right_width());
-        insert_css!("border-bottom-width", values.clone_border_bottom_width());
-        insert_css!("border-left-width", values.clone_border_left_width());
+        insert_css!("border-top-width", values.slow_clone_border_top_width());
+        insert_css!("border-right-width", values.slow_clone_border_right_width());
+        insert_css!("border-bottom-width", values.slow_clone_border_bottom_width());
+        insert_css!("border-left-width", values.slow_clone_border_left_width());
 
-        insert_css!("top", values.clone_top());
-        insert_css!("right", values.clone_right());
-        insert_css!("bottom", values.clone_bottom());
-        insert_css!("left", values.clone_left());
+        insert_css!("top", values.slow_clone_top());
+        insert_css!("right", values.slow_clone_right());
+        insert_css!("bottom", values.slow_clone_bottom());
+        insert_css!("left", values.slow_clone_left());
 
         insert_css!("color", values.get_inherited_text().get_color());
         insert_css!(
