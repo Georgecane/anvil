@@ -86,6 +86,7 @@ mod tests {
     use super::*;
     use crate::deque_tree::End;
     use crate::runtime::ui::UiModel;
+    use taffy::TraversePartialTree;
 
     #[test]
     fn taffy_traversal_reads_children_from_the_canonical_projection() {
