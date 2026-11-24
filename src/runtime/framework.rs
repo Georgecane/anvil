@@ -567,15 +567,13 @@ impl CommitAdapter {
                         .deques
                         .get(target)
                         .ok_or(FrameworkError::UnknownDeque(*target))?;
-                    if removal_sources.contains(&source) || !move_targets.insert(target_handle) {
+                    if removal_sources.contains(&source) {
                         return Ok(false);
                     }
 
                     if let Some((_, existing_source, existing_target, existing_end, handles)) =
-                        move_groups.iter_mut().find(|(_, _, _, _, handles)| {
-                            handles.first().is_some_and(|first| {
-                                ui.deque_handle_for_element(*first) == Some(source)
-                            })
+                        move_groups.iter_mut().find(|(_, group_source, _, _, _)| {
+                            *group_source == source
                         })
                     {
                         if *existing_source != source
@@ -586,7 +584,7 @@ impl CommitAdapter {
                         }
                         handles.push(handle);
                     } else {
-                        if !move_sources.insert(source) {
+                        if !move_sources.insert(source) || !move_targets.insert(target_handle) {
                             return Ok(false);
                         }
                         move_groups.push((index, source, target_handle, *target_end, vec![handle]));
@@ -1216,6 +1214,86 @@ mod tests {
                 Some(*handle)
             );
         }
+    }
+
+    #[test]
+    fn interleaved_independent_moves_are_batched_by_source_across_the_commit() {
+        let mut ui = UiModel::new();
+        let mut adapter = CommitAdapter::new();
+        let mut setup = FrameworkCommit::new();
+        setup.push(FrameworkOperation::CreateRootDeque {
+            id: FrameworkDequeId(1),
+        });
+        setup.push(FrameworkOperation::CreateChildDeque {
+            id: FrameworkDequeId(2),
+            parent: FrameworkDequeId(1),
+            side: crate::deque_tree::ChildSide::Left,
+        });
+        setup.push(FrameworkOperation::CreateChildDeque {
+            id: FrameworkDequeId(3),
+            parent: FrameworkDequeId(1),
+            side: crate::deque_tree::ChildSide::Right,
+        });
+        setup.push(FrameworkOperation::CreateChildDeque {
+            id: FrameworkDequeId(4),
+            parent: FrameworkDequeId(2),
+            side: crate::deque_tree::ChildSide::Left,
+        });
+        for (id, deque, end) in [
+            (100, 1, End::Back),
+            (1, 1, End::Front),
+            (2, 1, End::Front),
+            (200, 3, End::Back),
+            (11, 3, End::Front),
+        ] {
+            setup.push(FrameworkOperation::CreateElement {
+                id: FrameworkElementId(id),
+                deque: FrameworkDequeId(deque),
+                tag: "span".into(),
+                end,
+            });
+        }
+        adapter.apply_commit(setup, &mut ui).unwrap();
+        ui.prepare_render();
+
+        let first = adapter.native_element(FrameworkElementId(1)).unwrap();
+        let second = adapter.native_element(FrameworkElementId(2)).unwrap();
+        let third = adapter.native_element(FrameworkElementId(11)).unwrap();
+        let target_left = adapter.native_deque(FrameworkDequeId(2)).unwrap();
+        let target_nested = adapter.native_deque(FrameworkDequeId(4)).unwrap();
+
+        let mut commit = FrameworkCommit::new();
+        commit.push(FrameworkOperation::MoveSubtree {
+            anchor: FrameworkElementId(1),
+            target: FrameworkDequeId(2),
+            target_end: End::Back,
+        });
+        commit.push(FrameworkOperation::MoveSubtree {
+            anchor: FrameworkElementId(11),
+            target: FrameworkDequeId(4),
+            target_end: End::Back,
+        });
+        commit.push(FrameworkOperation::MoveSubtree {
+            anchor: FrameworkElementId(2),
+            target: FrameworkDequeId(2),
+            target_end: End::Back,
+        });
+
+        adapter.apply_commit(commit, &mut ui).unwrap();
+
+        assert_eq!(ui.deque_handle_for_element(first), Some(target_left));
+        assert_eq!(ui.deque_handle_for_element(second), Some(target_left));
+        assert_eq!(ui.logical_parent(first), Some(second));
+        assert_eq!(ui.deque_handle_for_element(third), Some(target_nested));
+        assert!(ui.logical_parent(third).is_none());
+        assert_eq!(
+            adapter.native_element(FrameworkElementId(1)),
+            Some(first)
+        );
+        assert_eq!(
+            adapter.native_element(FrameworkElementId(2)),
+            Some(second)
+        );
     }
 
     #[test]
