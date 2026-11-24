@@ -978,9 +978,7 @@ impl FrameworkAdapter for CommitAdapter {
                         anchor,
                         target,
                         target_end,
-                    } => {
-                        self.apply_move_batch(anchor, target, target_end, &mut operations, ui)?
-                    },
+                    } => self.apply_move_batch(anchor, target, target_end, &mut operations, ui)?,
                 }
             }
             Ok(())
