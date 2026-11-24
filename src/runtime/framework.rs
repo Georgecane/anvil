@@ -1286,7 +1286,7 @@ mod tests {
         assert_eq!(ui.deque_handle_for_element(second), Some(target_left));
         assert_eq!(ui.logical_parent(first), Some(second));
         assert_eq!(ui.deque_handle_for_element(third), Some(target_nested));
-        assert!(ui.logical_parent(third).is_none());
+        assert_eq!(ui.logical_parent(third), Some(second));
         assert_eq!(adapter.native_element(FrameworkElementId(1)), Some(first));
         assert_eq!(adapter.native_element(FrameworkElementId(2)), Some(second));
     }
