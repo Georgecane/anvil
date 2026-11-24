@@ -572,9 +572,9 @@ impl CommitAdapter {
                     }
 
                     if let Some((_, existing_source, existing_target, existing_end, handles)) =
-                        move_groups.iter_mut().find(|(_, group_source, _, _, _)| {
-                            *group_source == source
-                        })
+                        move_groups
+                            .iter_mut()
+                            .find(|(_, group_source, _, _, _)| *group_source == source)
                     {
                         if *existing_source != source
                             || *existing_target != target_handle
@@ -594,9 +594,10 @@ impl CommitAdapter {
             }
         }
 
-        if move_targets.iter().any(|target| {
-            removal_sources.contains(target) || move_sources.contains(target)
-        }) {
+        if move_targets
+            .iter()
+            .any(|target| removal_sources.contains(target) || move_sources.contains(target))
+        {
             return Ok(false);
         }
 
@@ -1286,14 +1287,8 @@ mod tests {
         assert_eq!(ui.logical_parent(first), Some(second));
         assert_eq!(ui.deque_handle_for_element(third), Some(target_nested));
         assert!(ui.logical_parent(third).is_none());
-        assert_eq!(
-            adapter.native_element(FrameworkElementId(1)),
-            Some(first)
-        );
-        assert_eq!(
-            adapter.native_element(FrameworkElementId(2)),
-            Some(second)
-        );
+        assert_eq!(adapter.native_element(FrameworkElementId(1)), Some(first));
+        assert_eq!(adapter.native_element(FrameworkElementId(2)), Some(second));
     }
 
     #[test]
