@@ -148,9 +148,7 @@ pub(crate) struct UiMutation {
     pub element: Option<ElementHandle>,
     pub affected: Vec<ElementHandle>,
     pub old_parent: Option<ElementHandle>,
-    pub old_siblings: Vec<ElementHandle>,
     pub new_parent: Option<ElementHandle>,
-    pub new_siblings: Vec<ElementHandle>,
     pub checked_deques: Vec<NodeId>,
     pub hash_changed_deques: Vec<NodeId>,
 }
@@ -405,24 +403,16 @@ impl UiModel {
         self.mutation_revision
     }
 
-    fn mutation_context(
-        &self,
-        handle: ElementHandle,
-    ) -> (Option<ElementHandle>, Vec<ElementHandle>) {
-        let parent = self.logical_parent(handle);
-        let siblings = parent
-            .map(|parent| self.logical_children(parent))
-            .unwrap_or_else(|| self.root_element_handles());
-        (parent, siblings)
+    /// Keep only the stable parent identity in the journal. Sibling invalidation
+    /// is derived from the post-mutation projection by the style engine; eagerly
+    /// cloning every sibling here made a single insert/remove/move O(sibling_count)
+    /// before the actual Deque operation even began.
+    fn mutation_context(&self, handle: ElementHandle) -> Option<ElementHandle> {
+        self.logical_parent(handle)
     }
 
-    /// Non-structural changes need the parent identity, not a sibling snapshot.
-    /// Insert, remove, and move operations continue to capture sibling context.
-    fn mutation_parent_context(
-        &self,
-        handle: ElementHandle,
-    ) -> (Option<ElementHandle>, Vec<ElementHandle>) {
-        (self.logical_parent(handle), Vec::new())
+    fn mutation_parent_context(&self, handle: ElementHandle) -> Option<ElementHandle> {
+        self.logical_parent(handle)
     }
 
     fn root_element_handles(&self) -> Vec<ElementHandle> {
@@ -475,8 +465,8 @@ impl UiModel {
         kind: UiMutationKind,
         element: Option<ElementHandle>,
         affected: Vec<ElementHandle>,
-        old_context: (Option<ElementHandle>, Vec<ElementHandle>),
-        new_context: (Option<ElementHandle>, Vec<ElementHandle>),
+        old_parent: Option<ElementHandle>,
+        new_parent: Option<ElementHandle>,
         checked_deques: Vec<NodeId>,
     ) {
         let mut checked_deques = checked_deques;
@@ -495,10 +485,8 @@ impl UiModel {
             kind,
             element,
             affected,
-            old_parent: old_context.0,
-            old_siblings: old_context.1,
-            new_parent: new_context.0,
-            new_siblings: new_context.1,
+            old_parent,
+            new_parent,
             checked_deques,
             hash_changed_deques,
         });
@@ -590,6 +578,76 @@ impl UiModel {
         self.create_element_with_handle(deque, handle, UiElement::text(text), end)?;
         Ok(handle)
     }
+    /// Inserts a contiguous batch at one Deque end and performs index/hash
+    /// maintenance once. The resulting order matches sequential UI insertions.
+    pub(crate) fn create_elements_batch(
+        &mut self,
+        deque: DequeHandle,
+        elements: Vec<UiElement>,
+        end: End,
+    ) -> Result<Vec<ElementHandle>, UiError> {
+        if elements.is_empty() {
+            return Ok(Vec::new());
+        }
+        let node_id = *self
+            .deque_handles
+            .get(&deque)
+            .ok_or(UiError::UnknownDeque(deque))?;
+        let was_ghost = self
+            .tree
+            .get(node_id)
+            .ok_or(UiError::UnknownDeque(deque))?
+            .deque()
+            .is_ghost();
+
+        let handles: Vec<_> = (0..elements.len())
+            .map(|_| alloc_element_handle())
+            .collect();
+        let normalized = elements.into_iter().map(normalize_ui_element).collect();
+        let entries = {
+            let deque = self
+                .tree
+                .get_mut(node_id)
+                .ok_or(UiError::UnknownDeque(deque))?
+                .deque_mut();
+            match end {
+                End::Front => deque.push_front_many(normalized),
+                End::Back => deque.push_back_many(normalized),
+            }
+        };
+        if entries.len() != handles.len() {
+            return Err(UiError::InvalidRange);
+        }
+
+        for (handle, entry) in handles.iter().copied().zip(entries) {
+            self.element_handles.insert(
+                handle,
+                ElementLocation {
+                    deque: node_id,
+                    entry,
+                },
+            );
+            self.entry_handles.insert((node_id, entry), handle);
+        }
+
+        if self.topology_sealed && was_ghost {
+            self.registry.refresh_render_stack(&self.tree);
+        }
+
+        for handle in &handles {
+            let new_parent = self.mutation_context(*handle);
+            self.record_mutation(
+                UiMutationKind::Insert,
+                Some(*handle),
+                vec![*handle],
+                None,
+                new_parent,
+                vec![node_id],
+            );
+        }
+        Ok(handles)
+    }
+
     pub fn create_element_with_handle(
         &mut self,
         deque: DequeHandle,
@@ -636,7 +694,7 @@ impl UiModel {
             UiMutationKind::Insert,
             Some(handle),
             vec![handle],
-            (None, Vec::new()),
+            None,
             new_context,
             vec![node_id],
         );
@@ -678,7 +736,7 @@ impl UiModel {
             UiMutationKind::Text,
             Some(handle),
             vec![handle],
-            context.clone(),
+            context,
             context,
             vec![location.deque],
         );
@@ -709,7 +767,7 @@ impl UiModel {
             UiMutationKind::Attribute,
             Some(handle),
             vec![handle],
-            context.clone(),
+            context,
             context,
             vec![location.deque],
         );
@@ -733,7 +791,7 @@ impl UiModel {
                 UiMutationKind::Attribute,
                 Some(handle),
                 vec![handle],
-                context.clone(),
+                context,
                 context,
                 vec![location.deque],
             );
@@ -765,7 +823,7 @@ impl UiModel {
             UiMutationKind::InlineStyle,
             Some(handle),
             vec![handle],
-            context.clone(),
+            context,
             context,
             vec![location.deque],
         );
@@ -789,7 +847,7 @@ impl UiModel {
                 UiMutationKind::InlineStyle,
                 Some(handle),
                 vec![handle],
-                context.clone(),
+                context,
                 context,
                 vec![location.deque],
             );
@@ -884,7 +942,7 @@ impl UiModel {
             Some(anchor),
             handles.clone(),
             old_context,
-            (None, Vec::new()),
+            None,
             checked_deques,
         );
         Ok(handles)
@@ -1289,11 +1347,11 @@ mod bootstrap_tests {
 }
 
 #[cfg(test)]
-mod non_structural_mutation_context_tests {
+mod mutation_context_tests {
     use super::*;
 
     #[test]
-    fn attribute_mutations_record_parent_without_materializing_sibling_snapshots() {
+    fn attribute_mutations_record_only_parent_identity() {
         let mut ui = UiModel::from_initial_groups(vec![InitialDeque {
             handle: DequeHandle(8_001),
             elements: vec![
@@ -1321,9 +1379,31 @@ mod non_structural_mutation_context_tests {
         ui.set_property(target, "class", "active").unwrap();
 
         let mutation = ui.mutation_journal.back().unwrap();
+        assert_eq!(mutation.old_parent, Some(parent));
         assert_eq!(mutation.new_parent, Some(parent));
-        assert!(mutation.old_siblings.is_empty());
-        assert!(mutation.new_siblings.is_empty());
+    }
+
+    #[test]
+    fn structural_mutations_record_parent_identity_without_sibling_snapshots() {
+        let mut ui = UiModel::new();
+        let root = ui.create_root_deque().unwrap();
+        let parent = ui.create_element(root, "main", End::Back).unwrap();
+        let moving = ui.create_element(root, "span", End::Front).unwrap();
+        ui.create_element(root, "span", End::Front).unwrap();
+        let target = ui
+            .create_child_deque(root, crate::deque_tree::ChildSide::Left)
+            .unwrap();
+        ui.projection();
+
+        ui.move_subtree(moving, target, End::Back).unwrap();
+        let mutation = ui.mutation_journal.back().unwrap();
+        assert_eq!(mutation.old_parent, Some(parent));
+        assert_eq!(mutation.new_parent, Some(parent));
+
+        ui.remove_subtree(moving).unwrap();
+        let mutation = ui.mutation_journal.back().unwrap();
+        assert_eq!(mutation.old_parent, Some(parent));
+        assert_eq!(mutation.new_parent, None);
     }
 }
 

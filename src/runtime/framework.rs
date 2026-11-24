@@ -1,4 +1,6 @@
-use super::ui::{DequeHandle, ElementHandle, InitialDeque, UiError, UiModel};
+#[cfg(test)]
+use super::ui::InitialElement;
+use super::ui::{DequeHandle, ElementHandle, InitialDeque, UiElement, UiError, UiModel};
 use crate::deque_tree::{ChildSide, End};
 use std::collections::{HashMap, HashSet};
 
@@ -175,6 +177,52 @@ impl CommitAdapter {
                 self.elements.remove(&id);
             }
         }
+    }
+
+    fn apply_create_batch(
+        &mut self,
+        deque: FrameworkDequeId,
+        end: End,
+        first: (FrameworkElementId, UiElement),
+        operations: &mut std::iter::Peekable<std::vec::IntoIter<FrameworkOperation>>,
+        ui: &mut UiModel,
+    ) -> Result<(), FrameworkError> {
+        let mut batch = vec![first];
+        loop {
+            let next = match operations.peek() {
+                Some(FrameworkOperation::CreateElement {
+                    id,
+                    deque: next_deque,
+                    tag,
+                    end: next_end,
+                }) if *next_deque == deque && *next_end == end => {
+                    Some((*id, UiElement::new(tag.clone())))
+                }
+                Some(FrameworkOperation::CreateText {
+                    id,
+                    deque: next_deque,
+                    text,
+                    end: next_end,
+                }) if *next_deque == deque && *next_end == end => {
+                    Some((*id, UiElement::text(text.clone())))
+                }
+                _ => None,
+            };
+            let Some(next) = next else {
+                break;
+            };
+            operations.next();
+            batch.push(next);
+        }
+
+        let native_deque = self.deques[&deque];
+        let elements = batch.iter().map(|(_, element)| element.clone()).collect();
+        let handles = ui.create_elements_batch(native_deque, elements, end)?;
+        for ((id, _), handle) in batch.into_iter().zip(handles) {
+            self.elements.insert(id, handle);
+            self.reverse_elements.insert(handle, id);
+        }
+        Ok(())
     }
 
     fn prune_stale_references(&mut self, commit: &FrameworkCommit, ui: &UiModel) {
@@ -678,7 +726,8 @@ impl FrameworkAdapter for CommitAdapter {
     ) -> Result<(), FrameworkError> {
         self.prune_stale_references(&commit, ui);
         self.validate(&commit, ui)?;
-        for op in commit.operations {
+        let mut operations = commit.operations.into_iter().peekable();
+        while let Some(op) = operations.next() {
             match op {
                 FrameworkOperation::CreateRootDeque { id } => {
                     let h = ui.create_root_deque()?;
@@ -697,9 +746,13 @@ impl FrameworkAdapter for CommitAdapter {
                     tag,
                     end,
                 } => {
-                    let h = ui.create_element(self.deques[&deque], tag, end)?;
-                    self.elements.insert(id, h);
-                    self.reverse_elements.insert(h, id);
+                    self.apply_create_batch(
+                        deque,
+                        end,
+                        (id, UiElement::new(tag)),
+                        &mut operations,
+                        ui,
+                    )?;
                 }
                 FrameworkOperation::CreateText {
                     id,
@@ -707,9 +760,13 @@ impl FrameworkAdapter for CommitAdapter {
                     text,
                     end,
                 } => {
-                    let h = ui.create_text(self.deques[&deque], text, end)?;
-                    self.elements.insert(id, h);
-                    self.reverse_elements.insert(h, id);
+                    self.apply_create_batch(
+                        deque,
+                        end,
+                        (id, UiElement::text(text)),
+                        &mut operations,
+                        ui,
+                    )?;
                 }
                 FrameworkOperation::SetText { id, text } => {
                     let h = self.elements[&id];
@@ -767,6 +824,99 @@ mod tests {
         ));
         assert_eq!(adapter.native_deque(FrameworkDequeId(1)), ui.root_handle());
         assert!(adapter.native_deque(FrameworkDequeId(2)).is_none());
+    }
+
+    #[test]
+    fn consecutive_front_creates_are_batched_without_changing_order_or_handles() {
+        let mut ui = UiModel::from_initial_groups(vec![InitialDeque {
+            handle: DequeHandle(100),
+            elements: vec![InitialElement {
+                handle: ElementHandle(1_000),
+                element: UiElement::new("main"),
+                subtree_span: 1,
+            }],
+        }])
+        .unwrap();
+        let parent = ElementHandle(1_000);
+        let mut adapter = CommitAdapter::new();
+        adapter
+            .bind_existing_root(FrameworkDequeId(1), &ui)
+            .unwrap();
+
+        let mut commit = FrameworkCommit::new();
+        commit.push(FrameworkOperation::CreateElement {
+            id: FrameworkElementId(1),
+            deque: FrameworkDequeId(1),
+            tag: "article".into(),
+            end: End::Front,
+        });
+        commit.push(FrameworkOperation::CreateText {
+            id: FrameworkElementId(2),
+            deque: FrameworkDequeId(1),
+            text: "batched text".into(),
+            end: End::Front,
+        });
+        commit.push(FrameworkOperation::CreateElement {
+            id: FrameworkElementId(3),
+            deque: FrameworkDequeId(1),
+            tag: "aside".into(),
+            end: End::Front,
+        });
+
+        adapter.apply_commit(commit, &mut ui).unwrap();
+
+        let first = adapter.native_element(FrameworkElementId(1)).unwrap();
+        let second = adapter.native_element(FrameworkElementId(2)).unwrap();
+        let third = adapter.native_element(FrameworkElementId(3)).unwrap();
+        assert_eq!(ui.logical_children(parent), vec![first, second, third]);
+        assert_eq!(ui.element(first).unwrap().tag, "article");
+        assert_eq!(
+            ui.element(second).unwrap().text_content(),
+            Some("batched text")
+        );
+        assert_eq!(ui.element(third).unwrap().tag, "aside");
+    }
+
+    #[test]
+    fn consecutive_back_creates_are_batched_with_ancestor_order_preserved() {
+        let mut ui = UiModel::from_initial_groups(vec![InitialDeque {
+            handle: DequeHandle(101),
+            elements: vec![InitialElement {
+                handle: ElementHandle(1_001),
+                element: UiElement::new("main"),
+                subtree_span: 1,
+            }],
+        }])
+        .unwrap();
+        let existing_root = ElementHandle(1_001);
+        let mut adapter = CommitAdapter::new();
+        adapter
+            .bind_existing_root(FrameworkDequeId(1), &ui)
+            .unwrap();
+
+        let mut commit = FrameworkCommit::new();
+        commit.push(FrameworkOperation::CreateElement {
+            id: FrameworkElementId(11),
+            deque: FrameworkDequeId(1),
+            tag: "section".into(),
+            end: End::Back,
+        });
+        commit.push(FrameworkOperation::CreateElement {
+            id: FrameworkElementId(12),
+            deque: FrameworkDequeId(1),
+            tag: "article".into(),
+            end: End::Back,
+        });
+
+        adapter.apply_commit(commit, &mut ui).unwrap();
+
+        let first = adapter.native_element(FrameworkElementId(11)).unwrap();
+        let second = adapter.native_element(FrameworkElementId(12)).unwrap();
+        assert_eq!(ui.logical_parent(existing_root), Some(first));
+        assert_eq!(ui.logical_parent(first), Some(second));
+        assert_eq!(ui.logical_parent(second), None);
+        assert_eq!(ui.logical_children(second), vec![first]);
+        assert_eq!(ui.logical_children(first), vec![existing_root]);
     }
 
     #[test]

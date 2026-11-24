@@ -85,6 +85,14 @@ impl<T> Deque<T> {
     /// `parent_indices` is only a derived acceleration cache: subtree spans
     /// remain the sole source of structural truth.
     fn refresh_hash(&mut self) {
+        self.refresh_hash_after_extraction(None);
+    }
+
+    /// Rebuilds the derived indexes and identity hash in one pass. When an
+    /// interval has just been removed, ancestor spans are adjusted during this
+    /// same pass instead of first scanning the suffix and then scanning the
+    /// complete Deque again.
+    fn refresh_hash_after_extraction(&mut self, extracted: Option<super::StructuralRange>) {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         self.ghost.hash(&mut h);
         self.entries.len().hash(&mut h);
@@ -98,7 +106,22 @@ impl<T> Deque<T> {
         // ancestor arrives, its span identifies exactly the suffix roots it
         // contains; those roots acquire this entry as their direct parent.
         let mut roots = Vec::<usize>::new();
-        for (index, (entry, span)) in self.entries.iter().zip(&self.subtree_spans).enumerate() {
+        for (index, (entry, span)) in self
+            .entries
+            .iter()
+            .zip(self.subtree_spans.iter_mut())
+            .enumerate()
+        {
+            if let Some(range) = extracted
+                && index >= range.start
+            {
+                let old_index = index + range.count;
+                let old_start = old_index + 1 - *span;
+                if old_start <= range.start {
+                    *span -= range.count;
+                }
+            }
+
             entry.id.hash(&mut h);
             span.hash(&mut h);
             self.entry_indices.insert(entry.id, index);
@@ -127,6 +150,31 @@ impl<T> Deque<T> {
         id
     }
 
+    /// Inserts several logical children at the Front while rebuilding indexes
+    /// and the identity hash only once. Iteration order matches repeated
+    /// push_front calls, including their final sibling order.
+    pub(crate) fn push_front_many(&mut self, values: Vec<T>) -> Vec<u64> {
+        let mut ids = Vec::with_capacity(values.len());
+        self.entries.reserve(values.len());
+        self.subtree_spans.reserve(values.len());
+
+        for value in values {
+            let id = Self::fresh_id();
+            if let Some(root_span) = self.subtree_spans.back_mut() {
+                *root_span += 1;
+            }
+            self.entries.push_front(Entry { id, value });
+            self.subtree_spans.push_front(1);
+            ids.push(id);
+        }
+
+        if !ids.is_empty() {
+            self.ghost = false;
+            self.refresh_hash();
+        }
+        ids
+    }
+
     /// Appends a new ancestor around the Deque's existing subtree at physical Back.
     pub fn push_back(&mut self, value: T) -> u64 {
         let id = Self::fresh_id();
@@ -137,6 +185,29 @@ impl<T> Deque<T> {
         self.refresh_hash();
         id
     }
+
+    /// Appends several nested ancestors at the Back and rebuilds indexes and
+    /// identity hash once, preserving repeated push_back ordering and spans.
+    pub(crate) fn push_back_many(&mut self, values: Vec<T>) -> Vec<u64> {
+        let mut ids = Vec::with_capacity(values.len());
+        self.entries.reserve(values.len());
+        self.subtree_spans.reserve(values.len());
+
+        for value in values {
+            let id = Self::fresh_id();
+            let span = self.entries.len() + 1;
+            self.entries.push_back(Entry { id, value });
+            self.subtree_spans.push_back(span);
+            ids.push(id);
+        }
+
+        if !ids.is_empty() {
+            self.ghost = false;
+            self.refresh_hash();
+        }
+        ids
+    }
+
     /// Builds a Deque from an already ordered reverse-preorder snapshot in one pass.
     /// Indexes and the identity hash are rebuilt once after all entries are appended.
     pub(crate) fn from_ordered_spans(
@@ -346,13 +417,6 @@ impl<T> Deque<T> {
 
     fn extract_subtree_entries(&mut self, range: StructuralRange) -> (Vec<Entry<T>>, Vec<usize>) {
         let range_end = range.start + range.count;
-        for (index, span) in self.subtree_spans.iter_mut().enumerate().skip(range_end) {
-            let old_start = index + 1 - *span;
-            if old_start <= range.start {
-                *span -= range.count;
-            }
-        }
-
         let (removed_entries, removed_spans) = if range.end == End::Front {
             let prefix_entries: Vec<_> = self.entries.drain(..range.start).collect();
             let prefix_spans: Vec<_> = self.subtree_spans.drain(..range.start).collect();
@@ -380,7 +444,7 @@ impl<T> Deque<T> {
             self.subtree_spans.extend(suffix_spans);
             (removed_entries, removed_spans)
         };
-        self.refresh_hash();
+        self.refresh_hash_after_extraction(Some(range));
         (removed_entries, removed_spans)
     }
 

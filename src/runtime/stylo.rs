@@ -369,11 +369,17 @@ fn mark_parent_context_all(
     parent: Option<ElementHandle>,
     dirty: &mut HashSet<ElementHandle>,
 ) {
-    let mut ancestor = parent;
-    while let Some(parent) = ancestor {
-        dirty.insert(parent);
-        dirty.extend(projection.children_of(parent));
-        ancestor = projection.parent_of(parent);
+    let Some(mut ancestor) = parent else {
+        dirty.extend(projection.root_elements());
+        return;
+    };
+    loop {
+        dirty.insert(ancestor);
+        dirty.extend(projection.children_of(ancestor));
+        let Some(parent) = projection.parent_of(ancestor) else {
+            break;
+        };
+        ancestor = parent;
     }
 }
 
@@ -432,18 +438,6 @@ fn mark_parent_context_incremental(
             mark_sibling_context(projection, current, dirty);
         }
         ancestor = projection.parent_of(current);
-    }
-}
-
-fn mark_old_sibling_context(
-    projection: &LogicalProjection<'_>,
-    siblings: &[ElementHandle],
-    dirty: &mut HashSet<ElementHandle>,
-) {
-    for sibling in siblings {
-        if projection.element(*sibling).is_some() {
-            mark_subtree(projection, *sibling, dirty);
-        }
     }
 }
 
@@ -570,7 +564,6 @@ fn collect_invalidated<'mutation>(
                     .extend(mutation.affected.iter().copied());
                 if !suppress_dirty_expansion {
                     mark_parent_context_all(projection, mutation.old_parent, &mut batch.dirty);
-                    mark_old_sibling_context(projection, &mutation.old_siblings, &mut batch.dirty);
                 }
             }
             UiMutationKind::Move => {
@@ -579,9 +572,7 @@ fn collect_invalidated<'mutation>(
                         mark_subtree(projection, *handle, &mut batch.dirty);
                     }
                     mark_parent_context_all(projection, mutation.old_parent, &mut batch.dirty);
-                    mark_old_sibling_context(projection, &mutation.old_siblings, &mut batch.dirty);
                     mark_parent_context_all(projection, mutation.new_parent, &mut batch.dirty);
-                    mark_old_sibling_context(projection, &mutation.new_siblings, &mut batch.dirty);
                 }
             }
         }
@@ -2177,6 +2168,69 @@ mod tests {
         assert_eq!(
             style_value(&ui, ElementHandle(6002), "background-color"),
             "rgb(10, 20, 30)"
+        );
+    }
+
+    #[test]
+    fn structural_sibling_removal_invalidates_relative_has_anchor() {
+        let mut ui = UiModel::new();
+        let root = ui.create_root_deque().unwrap();
+        ui.create_element(root, "main", End::Back).unwrap();
+        let anchor = ui.create_element(root, "span", End::Front).unwrap();
+        let target = ui.create_element(root, "span", End::Front).unwrap();
+        ui.set_property(anchor, "class", "anchor").unwrap();
+        ui.set_property(target, "class", "active").unwrap();
+
+        let mut stylo = StyloStyleEngine::new().unwrap();
+        stylo.add_stylesheet("main > .anchor:has(+ .active) { color: red; }");
+        run_style_pass(&mut stylo, &mut StyleCommitAdapter, &mut ui).unwrap();
+        assert_eq!(style_value(&ui, anchor, "color"), "rgb(255, 0, 0)");
+
+        ui.remove_subtree(target).unwrap();
+        run_style_pass(&mut stylo, &mut StyleCommitAdapter, &mut ui).unwrap();
+
+        assert_eq!(style_value(&ui, anchor, "color"), "rgb(0, 0, 0)");
+    }
+
+    #[test]
+    fn structural_root_removal_invalidates_sibling_selector_across_ghost_root() {
+        let groups = vec![
+            crate::runtime::ui::InitialDeque {
+                handle: crate::runtime::ui::DequeHandle(610),
+                elements: Vec::new(),
+            },
+            crate::runtime::ui::InitialDeque {
+                handle: crate::runtime::ui::DequeHandle(611),
+                elements: vec![crate::runtime::ui::InitialElement {
+                    handle: ElementHandle(6101),
+                    element: UiElement::new("article"),
+                    subtree_span: 1,
+                }],
+            },
+            crate::runtime::ui::InitialDeque {
+                handle: crate::runtime::ui::DequeHandle(612),
+                elements: vec![crate::runtime::ui::InitialElement {
+                    handle: ElementHandle(6102),
+                    element: UiElement::new("aside"),
+                    subtree_span: 1,
+                }],
+            },
+        ];
+        let mut ui = UiModel::from_initial_groups(groups).unwrap();
+        let mut stylo = StyloStyleEngine::new().unwrap();
+        stylo.add_stylesheet("article + aside { background-color: red; }");
+        run_style_pass(&mut stylo, &mut StyleCommitAdapter, &mut ui).unwrap();
+        assert_eq!(
+            style_value(&ui, ElementHandle(6102), "background-color"),
+            "rgb(255, 0, 0)"
+        );
+
+        ui.remove_subtree(ElementHandle(6101)).unwrap();
+        run_style_pass(&mut stylo, &mut StyleCommitAdapter, &mut ui).unwrap();
+
+        assert_eq!(
+            style_value(&ui, ElementHandle(6102), "background-color"),
+            "rgba(0, 0, 0, 0)"
         );
     }
 

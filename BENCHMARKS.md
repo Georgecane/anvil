@@ -86,6 +86,85 @@ Each fixture was measured in a fresh process. Values are Linux VmRSS deltas, rou
 
 RSS deltas are approximate and should be used for trend comparisons on the same environment, not as exact object-size accounting.
 
+## Structural mutation benchmarks
+
+Run the structural suite with:
+
+~~~bash
+cargo bench --bench structural
+~~~
+
+The suite measures interior `UiModel.move_subtree` and `UiModel.remove_subtree` operations using fresh fixtures per timed operation. It also measures complete `FrameworkCommit` batches containing 1, 8, or 32 consecutive element creations in one Deque. Fixture setup is excluded from timing; commit timings include validation, UI mutation, mutation-journal recording, and Registry updates.
+
+### Move one interior subtree
+
+Median nanoseconds per move. The anchor is placed between sibling roots, and each operation uses a fresh fixture so the source position remains stable.
+
+| Siblings | Subtree size | Median |
+|---:|---:|---:|
+| 128 | 1 | 9,491 ns |
+| 128 | 16 | 13,814 ns |
+| 128 | 256 | 108,991 ns |
+| 1,024 | 1 | 89,014 ns |
+| 1,024 | 16 | 84,680 ns |
+| 1,024 | 256 | 151,477 ns |
+| 4,096 | 1 | 380,660 ns |
+| 4,096 | 16 | 387,219 ns |
+| 4,096 | 256 | 381,995 ns |
+
+### Remove one interior subtree
+
+Median nanoseconds per removal:
+
+| Siblings | Median |
+|---:|---:|
+| 128 | 12,337 ns |
+| 1,024 | 91,536 ns |
+| 4,096 | 399,450 ns |
+
+### Framework batch creation at End::Front
+
+Median microseconds per complete commit. Before is the original per-operation Deque refresh path; after coalesces adjacent creates into one bulk insertion and one Deque index/hash refresh.
+
+| Existing siblings | Creates | Before | After |
+|---:|---:|---:|---:|
+| 128 | 1 | 8.06 µs | 6.98 µs |
+| 128 | 8 | 66.98 µs | 13.24 µs |
+| 128 | 32 | 343.09 µs | 33.11 µs |
+| 1,024 | 1 | 69.96 µs | 58.67 µs |
+| 1,024 | 8 | 549.44 µs | 68.13 µs |
+| 1,024 | 32 | 1,816.65 µs | 110.13 µs |
+| 4,096 | 1 | 321.81 µs | 320.24 µs |
+| 4,096 | 8 | 2,295.63 µs | 351.68 µs |
+| 4,096 | 32 | 9,776.05 µs | 289.95 µs |
+
+At 4,096 existing siblings, a 32-element commit fell from 9.78 ms to 0.29 ms, approximately 33.7x faster. Single-element commits are essentially unchanged; the gain comes from amortizing index/hash maintenance across the batch.
+
+### Framework batch creation at End::Back
+
+Current median microseconds per complete commit. Back insertion creates a nested ancestor chain, and the bulk path preserves that exact sequential ordering.
+
+| Existing siblings | Creates | Median |
+|---:|---:|---:|
+| 128 | 1 | 10.26 µs |
+| 128 | 8 | 15.59 µs |
+| 128 | 32 | 37.31 µs |
+| 1,024 | 1 | 63.83 µs |
+| 1,024 | 8 | 64.04 µs |
+| 1,024 | 32 | 94.08 µs |
+| 4,096 | 1 | 297.77 µs |
+| 4,096 | 8 | 352.85 µs |
+| 4,096 | 32 | 371.12 µs |
+
+### What changed
+
+- Mutation journal entries retain only old/new parent identities. They no longer clone full sibling lists before structural operations.
+- Stylo derives affected sibling context from the post-mutation projection. Structural invalidation still covers current siblings and ancestors; removed nodes are handled through the removed-state list. Regression tests cover `:nth-child`, `:has(+ ...)`, and sibling selectors across ghost roots.
+- Deque extraction adjusts ancestor spans during the same pass that rebuilds entry indexes, parent indexes, and the identity hash, eliminating a separate suffix scan.
+- Framework commits coalesce adjacent `CreateElement` and `CreateText` operations when they target the same Deque and insertion end. `push_front_many` and `push_back_many` preserve sequential ordering while rebuilding Deque indexes and identity hash once. Individual handles and mutation-journal entries are still emitted for every create operation.
+
+The remaining growth for a single interior move is expected from the contiguous `VecDeque` representation: extracting an interior interval shifts entries, updates the derived ID-to-index map, and recomputes the order-sensitive Deque identity hash. This work is not yet sublinear. Batch creation, however, now amortizes that rebuild across adjacent operations.
+
 ## Interpretation
 
 The current measurements support three conclusions:
