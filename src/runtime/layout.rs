@@ -1,5 +1,124 @@
 use super::ui::{ElementHandle, LogicalProjection};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LayoutStyleError {
+    UnsupportedValue { property: &'static str, value: String },
+    InvalidValue { property: &'static str, value: String },
+}
+fn unsupported(property: &'static str, value: &str) -> LayoutStyleError {
+    LayoutStyleError::UnsupportedValue { property, value: value.to_owned() }
+}
+fn invalid(property: &'static str, value: &str) -> LayoutStyleError {
+    LayoutStyleError::InvalidValue { property, value: value.to_owned() }
+}
+fn parse_numeric(value: &str, property: &'static str) -> Result<f32, LayoutStyleError> {
+    let parsed = value.parse::<f32>().map_err(|_| invalid(property, value))?;
+    if parsed.is_finite() { Ok(parsed) } else { Err(invalid(property, value)) }
+}
+fn parse_dimension(value: &str, property: &'static str) -> Result<taffy::Dimension, LayoutStyleError> {
+    let value = value.trim();
+    match value {
+        "auto" => Ok(taffy::Dimension::auto()),
+        "min-content" => Ok(taffy::Dimension::min_content()),
+        "max-content" => Ok(taffy::Dimension::max_content()),
+        _ if value.ends_with("px") => Ok(taffy::Dimension::length(parse_numeric(value.trim_end_matches("px").trim(), property)?)),
+        _ if value.ends_with('%') => Ok(taffy::Dimension::percent(parse_numeric(value.trim_end_matches('%').trim(), property)? / 100.0)),
+        _ if value == "0" => Ok(taffy::Dimension::length(0.0)),
+        _ => Err(unsupported(property, value)),
+    }
+}
+fn parse_length_percentage_auto(value: &str, property: &'static str) -> Result<taffy::LengthPercentageAuto, LayoutStyleError> {
+    let value = value.trim();
+    match value {
+        "auto" => Ok(taffy::LengthPercentageAuto::auto()),
+        _ if value.ends_with("px") => Ok(taffy::LengthPercentageAuto::length(parse_numeric(value.trim_end_matches("px").trim(), property)?)),
+        _ if value.ends_with('%') => Ok(taffy::LengthPercentageAuto::percent(parse_numeric(value.trim_end_matches('%').trim(), property)? / 100.0)),
+        _ if value == "0" => Ok(taffy::LengthPercentageAuto::length(0.0)),
+        _ => Err(unsupported(property, value)),
+    }
+}
+fn parse_length_percentage(value: &str, property: &'static str) -> Result<taffy::LengthPercentage, LayoutStyleError> {
+    let value = value.trim();
+    match value {
+        _ if value.ends_with("px") => Ok(taffy::LengthPercentage::length(parse_numeric(value.trim_end_matches("px").trim(), property)?)),
+        _ if value.ends_with('%') => Ok(taffy::LengthPercentage::percent(parse_numeric(value.trim_end_matches('%').trim(), property)? / 100.0)),
+        _ if value == "0" => Ok(taffy::LengthPercentage::length(0.0)),
+        _ => Err(unsupported(property, value)),
+    }
+}
+fn computed_value<'a>(properties: &'a BTreeMap<String, String>, property: &'static str) -> Option<&'a str> {
+    properties.get(property).map(String::as_str)
+}
+
+/// Translate Stylo's computed snapshot into Taffy's input style. This does not
+/// parse declarations, cascade rules, or resolve CSS. Values are expected to
+/// be computed CSS px, percentages, or supported keywords. Calc expressions
+/// are rejected until their opaque Stylo handles can be safely owned.
+pub fn taffy_style_from_computed(properties: &BTreeMap<String, String>) -> Result<taffy::Style, LayoutStyleError> {
+    let mut style = taffy::Style::default();
+    if let Some(value) = computed_value(properties, "display") {
+        style.display = match value {
+            "none" => taffy::Display::None,
+            "block" => taffy::Display::Block,
+            "flow-root" => taffy::Display::FlowRoot,
+            "flex" => taffy::Display::Flex,
+            "grid" => taffy::Display::Grid,
+            _ => return Err(unsupported("display", value)),
+        };
+    }
+    if let Some(value) = computed_value(properties, "box-sizing") {
+        style.box_sizing = match value {
+            "border-box" => taffy::BoxSizing::BorderBox,
+            "content-box" => taffy::BoxSizing::ContentBox,
+            _ => return Err(unsupported("box-sizing", value)),
+        };
+    }
+    if let Some(value) = computed_value(properties, "position") {
+        style.position = match value {
+            "static" => taffy::Position::Static,
+            "relative" => taffy::Position::Relative,
+            "absolute" => taffy::Position::Absolute,
+            "fixed" => taffy::Position::Fixed,
+            "sticky" => taffy::Position::Sticky,
+            _ => return Err(unsupported("position", value)),
+        };
+    }
+    for (property, target) in [("width", &mut style.size.width), ("height", &mut style.size.height)] {
+        if let Some(value) = computed_value(properties, property) { *target = parse_dimension(value, property)?; }
+    }
+    for (property, target) in [
+        ("min-width", &mut style.min_size.width), ("min-height", &mut style.min_size.height),
+        ("max-width", &mut style.max_size.width), ("max-height", &mut style.max_size.height),
+    ] {
+        if let Some(value) = computed_value(properties, property) { *target = parse_length_percentage_auto(value, property)?; }
+    }
+    for (property, target) in [
+        ("margin-top", &mut style.margin.top), ("margin-right", &mut style.margin.right),
+        ("margin-bottom", &mut style.margin.bottom), ("margin-left", &mut style.margin.left),
+    ] {
+        if let Some(value) = computed_value(properties, property) { *target = parse_length_percentage_auto(value, property)?; }
+    }
+    for (property, target) in [
+        ("padding-top", &mut style.padding.top), ("padding-right", &mut style.padding.right),
+        ("padding-bottom", &mut style.padding.bottom), ("padding-left", &mut style.padding.left),
+    ] {
+        if let Some(value) = computed_value(properties, property) { *target = parse_length_percentage(value, property)?; }
+    }
+    for (property, target) in [
+        ("border-top-width", &mut style.border.top), ("border-right-width", &mut style.border.right),
+        ("border-bottom-width", &mut style.border.bottom), ("border-left-width", &mut style.border.left),
+    ] {
+        if let Some(value) = computed_value(properties, property) { *target = parse_length_percentage(value, property)?; }
+    }
+    for (property, target) in [
+        ("top", &mut style.inset.top), ("right", &mut style.inset.right),
+        ("bottom", &mut style.inset.bottom), ("left", &mut style.inset.left),
+    ] {
+        if let Some(value) = computed_value(properties, property) { *target = parse_length_percentage_auto(value, property)?; }
+    }
+    Ok(style)
+}
 
 /// A temporary Taffy node index mapped to a stable canonical Anvil element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -87,6 +206,40 @@ mod tests {
     use crate::deque_tree::End;
     use crate::runtime::ui::UiModel;
     use taffy::TraversePartialTree;
+
+    #[test]
+    fn computed_css_geometry_maps_to_taffy_without_losing_percent_or_auto() {
+        let properties = BTreeMap::from([
+            ("display".into(), "flex".into()), ("box-sizing".into(), "content-box".into()),
+            ("position".into(), "absolute".into()), ("width".into(), "75%".into()),
+            ("height".into(), "120px".into()), ("min-width".into(), "auto".into()),
+            ("margin-left".into(), "auto".into()), ("margin-top".into(), "12px".into()),
+            ("padding-left".into(), "5%".into()), ("padding-top".into(), "8px".into()),
+            ("border-left-width".into(), "2px".into()), ("left".into(), "10%".into()),
+        ]);
+        let style = taffy_style_from_computed(&properties).unwrap();
+        assert_eq!(style.display, taffy::Display::Flex);
+        assert_eq!(style.box_sizing, taffy::BoxSizing::ContentBox);
+        assert_eq!(style.position, taffy::Position::Absolute);
+        assert_eq!(style.size.width, taffy::Dimension::percent(0.75));
+        assert_eq!(style.size.height, taffy::Dimension::length(120.0));
+        assert_eq!(style.min_size.width, taffy::LengthPercentageAuto::auto());
+        assert_eq!(style.margin.left, taffy::LengthPercentageAuto::auto());
+        assert_eq!(style.margin.top, taffy::LengthPercentageAuto::length(12.0));
+        assert_eq!(style.padding.left, taffy::LengthPercentage::percent(0.05));
+        assert_eq!(style.padding.top, taffy::LengthPercentage::length(8.0));
+        assert_eq!(style.border.left, taffy::LengthPercentage::length(2.0));
+        assert_eq!(style.inset.left, taffy::LengthPercentageAuto::percent(0.1));
+    }
+
+    #[test]
+    fn computed_css_calc_is_rejected_until_its_handle_lifetime_is_owned() {
+        let properties = BTreeMap::from([("width".into(), "calc(100% - 12px)".into())]);
+        assert!(matches!(
+            taffy_style_from_computed(&properties),
+            Err(LayoutStyleError::UnsupportedValue { property: "width", .. })
+        ));
+    }
 
     #[test]
     fn taffy_traversal_reads_children_from_the_canonical_projection() {
