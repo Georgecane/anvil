@@ -1590,7 +1590,10 @@ impl StyloStyleEngine {
             values.get_background().get_background_color()
         );
         insert_css!("font-size", values.slow_clone_font_size());
-        result.insert("opacity".into(), values.get_effects().get_opacity().to_string());
+        result.insert(
+            "opacity".into(),
+            values.get_effects().get_opacity().to_string(),
+        );
         result
     }
 }
@@ -2783,7 +2786,11 @@ mod tests {
             ("bottom", "12px"),
             ("left", "13px"),
         ] {
-            assert_eq!(computed.get(property).map(String::as_str), Some(expected), "{property}");
+            assert_eq!(
+                computed.get(property).map(String::as_str),
+                Some(expected),
+                "{property}"
+            );
         }
     }
 
