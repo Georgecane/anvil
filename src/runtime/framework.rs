@@ -614,109 +614,6 @@ impl CommitAdapter {
         Ok(true)
     }
 
-    /// Batches independent structural operations across interleaved property/text updates.
-    /// Non-structural targets must be outside every moved or removed subtree. This
-    /// makes the structural extraction commute with the remaining value updates.
-    fn apply_mixed_independent_structural_batch(
-        &mut self,
-        commit: &FrameworkCommit,
-        ui: &mut UiModel,
-    ) -> Result<bool, FrameworkError> {
-        let mut structural_operations = Vec::new();
-        let mut value_targets = HashSet::new();
-
-        for operation in commit.operations() {
-            match operation {
-                FrameworkOperation::RemoveSubtree { .. }
-                | FrameworkOperation::MoveSubtree { .. } => {
-                    structural_operations.push(operation.clone());
-                }
-                FrameworkOperation::SetText { id, .. }
-                | FrameworkOperation::SetProperty { id, .. }
-                | FrameworkOperation::RemoveProperty { id, .. }
-                | FrameworkOperation::SetStyle { id, .. }
-                | FrameworkOperation::RemoveStyle { id, .. } => {
-                    let handle = self
-                        .elements
-                        .get(id)
-                        .copied()
-                        .ok_or(FrameworkError::UnknownElement(*id))?;
-                    value_targets.insert(handle);
-                }
-                // Creates can establish dependencies for later structural operations,
-                // and topology changes cannot be reordered across a sealed commit.
-                _ => return Ok(false),
-            }
-        }
-
-        if structural_operations.is_empty() || value_targets.is_empty() {
-            return Ok(false);
-        }
-
-        let structural_commit = FrameworkCommit {
-            operations: structural_operations,
-        };
-        let mut structurally_affected = HashSet::new();
-        for operation in structural_commit.operations() {
-            let anchor = match operation {
-                FrameworkOperation::RemoveSubtree { anchor }
-                | FrameworkOperation::MoveSubtree { anchor, .. } => *anchor,
-                _ => unreachable!("structural commit contains only structural operations"),
-            };
-            let handle = *self
-                .elements
-                .get(&anchor)
-                .ok_or(FrameworkError::UnknownElement(anchor))?;
-            structurally_affected.extend(ui.preview_subtree_handles(handle)?);
-        }
-
-        if value_targets
-            .iter()
-            .any(|handle| structurally_affected.contains(handle))
-        {
-            return Ok(false);
-        }
-
-        if !self.validate_structural_only_batch(&structural_commit, ui)? {
-            return Ok(false);
-        }
-        if !self.apply_global_structural_batch(&structural_commit, ui)? {
-            return Ok(false);
-        }
-
-        // Keep value-operation order intact. Their targets are guaranteed to
-        // survive and remain outside all structurally transformed subtrees.
-        for operation in commit.operations() {
-            match operation {
-                FrameworkOperation::SetText { id, text } => {
-                    let handle = self.elements[id];
-                    ui.set_text(handle, text.clone())
-                        .map_err(|error| match error {
-                            UiError::NotText(_) => FrameworkError::NotText(*id),
-                            other => FrameworkError::Ui(other),
-                        })?;
-                }
-                FrameworkOperation::SetProperty { id, key, value } => {
-                    ui.set_property(self.elements[id], key.clone(), value.clone())?;
-                }
-                FrameworkOperation::RemoveProperty { id, key } => {
-                    ui.remove_property(self.elements[id], key)?;
-                }
-                FrameworkOperation::SetStyle { id, key, value } => {
-                    ui.set_style(self.elements[id], key.clone(), value.clone())?;
-                }
-                FrameworkOperation::RemoveStyle { id, key } => {
-                    ui.remove_style(self.elements[id], key)?;
-                }
-                FrameworkOperation::RemoveSubtree { .. }
-                | FrameworkOperation::MoveSubtree { .. } => {}
-                _ => unreachable!("mixed batch was preflighted to contain only value updates"),
-            }
-        }
-
-        Ok(true)
-    }
-
     fn validate(&self, commit: &FrameworkCommit, ui: &UiModel) -> Result<(), FrameworkError> {
         if !commit.operations().iter().any(|operation| {
             matches!(
@@ -1109,9 +1006,6 @@ impl FrameworkAdapter for CommitAdapter {
         }
         let apply_result = (|| -> Result<(), FrameworkError> {
             if structural_batch && self.apply_global_structural_batch(&commit, ui)? {
-                return Ok(());
-            }
-            if !structural_batch && self.apply_mixed_independent_structural_batch(&commit, ui)? {
                 return Ok(());
             }
             let mut operations = commit.operations.into_iter().peekable();
@@ -2106,7 +2000,7 @@ mod initial_snapshot_tests {
         assert!(ui.topology_is_sealed());
     }
     #[test]
-    fn mixed_commit_batches_independent_structural_ops_around_value_updates() {
+    fn mixed_commit_applies_structural_and_value_updates_in_operation_order() {
         let mut ui = UiModel::new();
         let mut adapter = CommitAdapter::new();
         let mut setup = FrameworkCommit::new();
