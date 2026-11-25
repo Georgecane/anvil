@@ -1,7 +1,7 @@
+use cosmic_text::fontdb::ID as FontFaceId;
 use cosmic_text::{
     Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Stretch, Style, SwashCache, Weight,
 };
-use cosmic_text::fontdb::ID as FontFaceId;
 use std::collections::HashMap;
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
@@ -145,8 +145,7 @@ fn font_family_spans(
     let mut active_start = 0;
 
     for (start, grapheme) in text.grapheme_indices(true) {
-        let family_index =
-            select_font_family(grapheme, family_count, &mut supports);
+        let family_index = select_font_family(grapheme, family_count, &mut supports);
 
         if let Some(previous_family) = active_family {
             if previous_family != family_index {
@@ -404,10 +403,7 @@ mod tests {
 
     #[test]
     fn fallback_prefers_earlier_family_when_coverage_is_equal() {
-        assert_eq!(
-            super::select_font_family("x", 2, |_, _| true),
-            0
-        );
+        assert_eq!(super::select_font_family("x", 2, |_, _| true), 0);
     }
 
     #[test]
