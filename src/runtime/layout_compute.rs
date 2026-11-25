@@ -1,4 +1,5 @@
 use super::layout::{LayoutStyleError, TaffyTreeProjection, taffy_style_from_computed};
+use super::text::TextSystem;
 use super::ui::{ElementHandle, LogicalProjection, UiElementKind};
 use std::collections::HashMap;
 use taffy::{
@@ -26,6 +27,9 @@ pub enum LayoutComputeError {
 /// ElementHandle and never owns element topology.
 struct ElementLayoutState {
     style: taffy::Style,
+    text_content: Option<String>,
+    font_size: f32,
+    line_height: f32,
     cache: Cache,
     unrounded: Layout,
     final_layout: Layout,
@@ -36,6 +40,9 @@ impl ElementLayoutState {
     fn new(style: taffy::Style) -> Self {
         Self {
             style,
+            text_content: None,
+            font_size: 16.0,
+            line_height: 19.2,
             cache: Cache::new(),
             unrounded: Layout::with_order(0),
             final_layout: Layout::with_order(0),
@@ -49,13 +56,17 @@ impl ElementLayoutState {
 /// The projection remains the only source of parent/child relationships.
 /// Taffy NodeIds are ephemeral indices for this pass; all persistent derived
 /// state is keyed by ElementHandle.
-pub struct NativeLayoutPass<'a> {
+pub struct NativeLayoutPass<'a, 'text> {
     projection: TaffyTreeProjection<'a>,
+    text_system: &'text mut TextSystem,
     states: HashMap<ElementHandle, ElementLayoutState>,
 }
 
-impl<'a> NativeLayoutPass<'a> {
-    pub fn new(projection: LogicalProjection<'a>) -> Result<Self, LayoutComputeError> {
+impl<'a, 'text> NativeLayoutPass<'a, 'text> {
+    pub fn new(
+        projection: LogicalProjection<'a>,
+        text_system: &'text mut TextSystem,
+    ) -> Result<Self, LayoutComputeError> {
         let taffy_projection = TaffyTreeProjection::new(projection);
         let mut states = HashMap::new();
 
@@ -65,15 +76,24 @@ impl<'a> NativeLayoutPass<'a> {
                 .element(handle)
                 .ok_or(LayoutComputeError::UnknownElement(handle))?;
 
-            if element.kind == UiElementKind::Text {
-                return Err(LayoutComputeError::UnsupportedNode {
-                    handle,
-                    reason: "text measurement is not connected to the native layout pass",
-                });
-            }
-
-            let style = taffy_style_from_computed(&element.computed_styles)
-                .map_err(|source| LayoutComputeError::InvalidStyle { handle, source })?;
+            let inherited_text_styles = if element.kind == UiElementKind::Text {
+                taffy_projection
+                    .projection()
+                    .parent_of(handle)
+                    .and_then(|parent| taffy_projection.projection().element(parent))
+                    .map(|parent| &parent.computed_styles)
+            } else {
+                None
+            };
+            let computed_styles = inherited_text_styles.unwrap_or(&element.computed_styles);
+            let mut style = if element.kind == UiElementKind::Text {
+                let mut text_style = taffy::Style::default();
+                text_style.display = taffy::Display::Block;
+                text_style
+            } else {
+                taffy_style_from_computed(computed_styles)
+                    .map_err(|source| LayoutComputeError::InvalidStyle { handle, source })?
+            };
 
             let children = taffy_projection.projection().children_of(handle);
             let mut hidden_by_ancestor = false;
@@ -102,11 +122,36 @@ impl<'a> NativeLayoutPass<'a> {
                 });
             }
 
-            states.insert(handle, ElementLayoutState::new(style));
+            let mut state = ElementLayoutState::new(style);
+            if element.kind == UiElementKind::Text {
+                state.text_content = Some(element.text_content().unwrap_or_default().to_owned());
+                state.font_size = computed_styles
+                    .get("font-size")
+                    .and_then(|value| value.strip_suffix("px"))
+                    .and_then(|value| value.trim().parse::<f32>().ok())
+                    .filter(|value| value.is_finite() && *value > 0.0)
+                    .unwrap_or(16.0);
+                state.line_height = computed_styles
+                    .get("line-height")
+                    .map(String::as_str)
+                    .and_then(|value| {
+                        if value == "normal" {
+                            Some(state.font_size * 1.2)
+                        } else if let Some(px) = value.strip_suffix("px") {
+                            px.trim().parse::<f32>().ok()
+                        } else {
+                            value.parse::<f32>().ok().map(|scale| state.font_size * scale)
+                        }
+                    })
+                    .filter(|value| value.is_finite() && *value > 0.0)
+                    .unwrap_or(state.font_size * 1.2);
+            }
+            states.insert(handle, state);
         }
 
         Ok(Self {
             projection: taffy_projection,
+            text_system,
             states,
         })
     }
@@ -156,7 +201,7 @@ impl<'a> NativeLayoutPass<'a> {
     }
 }
 
-impl taffy::TraversePartialTree for NativeLayoutPass<'_> {
+impl taffy::TraversePartialTree for NativeLayoutPass<'_, '_> {
     type ChildIter<'b>
         = std::vec::IntoIter<taffy::NodeId>
     where
@@ -186,9 +231,9 @@ impl taffy::TraversePartialTree for NativeLayoutPass<'_> {
     }
 }
 
-impl taffy::TraverseTree for NativeLayoutPass<'_> {}
+impl taffy::TraverseTree for NativeLayoutPass<'_, '_> {}
 
-impl taffy::LayoutPartialTree for NativeLayoutPass<'_> {
+impl taffy::LayoutPartialTree for NativeLayoutPass<'_, '_> {
     type CustomIdent = String;
     type CoreContainerStyle<'b>
         = &'b taffy::Style
@@ -219,13 +264,35 @@ impl taffy::LayoutPartialTree for NativeLayoutPass<'_> {
             let mut output = if style.display == taffy::Display::Flex {
                 compute_flexbox_layout(tree, node_id, inputs)
             } else {
+                let text_content = tree.state(node_id).text_content.clone();
+                let font_size = tree.state(node_id).font_size;
+                let line_height = tree.state(node_id).line_height;
                 compute_leaf_layout(
                     inputs,
                     &style,
                     |_value, _basis| 0.0,
-                    |known_dimensions, _available_space| Size {
-                        width: known_dimensions.width.unwrap_or(0.0),
-                        height: known_dimensions.height.unwrap_or(0.0),
+                    |known_dimensions, available_space| {
+                        if let Some(text) = text_content.as_deref() {
+                            let max_width = match available_space.width {
+                                AvailableSpace::Definite(width) => Some(width),
+                                AvailableSpace::MinContent | AvailableSpace::MaxContent => None,
+                            };
+                            let (measured_width, measured_height) = tree.text_system.measure(
+                                text,
+                                max_width,
+                                font_size,
+                                line_height,
+                            );
+                            Size {
+                                width: known_dimensions.width.unwrap_or(measured_width),
+                                height: known_dimensions.height.unwrap_or(measured_height),
+                            }
+                        } else {
+                            Size {
+                                width: known_dimensions.width.unwrap_or(0.0),
+                                height: known_dimensions.height.unwrap_or(0.0),
+                            }
+                        }
                     },
                 )
             };
@@ -238,7 +305,7 @@ impl taffy::LayoutPartialTree for NativeLayoutPass<'_> {
     }
 }
 
-impl CacheTree for NativeLayoutPass<'_> {
+impl CacheTree for NativeLayoutPass<'_, '_> {
     fn cache_get(&self, node_id: taffy::NodeId, inputs: &LayoutInput) -> Option<LayoutOutput> {
         self.state(node_id).cache.get(inputs)
     }
@@ -252,7 +319,7 @@ impl CacheTree for NativeLayoutPass<'_> {
     }
 }
 
-impl taffy::LayoutContainingBlock for NativeLayoutPass<'_> {
+impl taffy::LayoutContainingBlock for NativeLayoutPass<'_, '_> {
     type OofItemStyle<'b>
         = &'b taffy::Style
     where
@@ -271,7 +338,7 @@ impl taffy::LayoutContainingBlock for NativeLayoutPass<'_> {
     }
 }
 
-impl taffy::LayoutFlexboxContainer for NativeLayoutPass<'_> {
+impl taffy::LayoutFlexboxContainer for NativeLayoutPass<'_, '_> {
     type FlexboxContainerStyle<'b>
         = &'b taffy::Style
     where
@@ -293,7 +360,7 @@ impl taffy::LayoutFlexboxContainer for NativeLayoutPass<'_> {
     }
 }
 
-impl taffy::RoundTree for NativeLayoutPass<'_> {
+impl taffy::RoundTree for NativeLayoutPass<'_, '_> {
     fn get_unrounded_layout(&self, node_id: taffy::NodeId) -> Layout {
         self.state(node_id).unrounded
     }
@@ -366,7 +433,7 @@ mod compute_tests {
         let root = ElementHandle(90_103);
         let first = ElementHandle(90_102);
         let second = ElementHandle(90_101);
-        let mut pass = NativeLayoutPass::new(ui.projection()).unwrap();
+        let mut pass = NativeLayoutPass::new(ui.projection(), &mut TextSystem::new()).unwrap();
         pass.compute(
             root,
             Size {
@@ -422,7 +489,7 @@ mod compute_tests {
         let hidden = ElementHandle(90_202);
         let visible = ElementHandle(90_203);
         let root = ElementHandle(90_204);
-        let mut pass = NativeLayoutPass::new(ui.projection()).unwrap();
+        let mut pass = NativeLayoutPass::new(ui.projection(), &mut TextSystem::new()).unwrap();
         pass.compute(
             root,
             Size {
@@ -448,14 +515,44 @@ mod compute_tests {
     }
 
     #[test]
-    fn text_nodes_are_rejected_until_text_measurement_is_connected() {
-        let mut ui = UiModel::new();
-        let root = ui.create_root_deque().unwrap();
-        let _text = ui.create_text(root, "native text", End::Back).unwrap();
-        assert!(matches!(
-            NativeLayoutPass::new(ui.projection()),
-            Err(LayoutComputeError::UnsupportedNode { reason, .. })
-                if reason.contains("text measurement")
-        ));
+    fn text_nodes_are_measured_by_the_native_text_system() {
+        let mut ui = UiModel::from_initial_groups(vec![InitialDeque {
+            handle: super::super::ui::DequeHandle(90_003),
+            elements: vec![
+                InitialElement {
+                    handle: ElementHandle(90_301),
+                    element: UiElement::text("Native text measurement"),
+                    subtree_span: 1,
+                },
+                InitialElement {
+                    handle: ElementHandle(90_302),
+                    element: {
+                        let mut root = element("root", "flex", "300px", "100px");
+                        root.computed_styles.insert("font-size".into(), "24px".into());
+                        root
+                    },
+                    subtree_span: 2,
+                },
+            ],
+        }])
+        .unwrap();
+
+        let text = ElementHandle(90_301);
+        let root = ElementHandle(90_302);
+        let mut text_system = TextSystem::new();
+        let mut pass = NativeLayoutPass::new(ui.projection(), &mut text_system).unwrap();
+        pass.compute(
+            root,
+            Size {
+                width: 300.0,
+                height: 100.0,
+            },
+        )
+        .unwrap();
+
+        let measured = pass.layout(text).unwrap();
+        assert!(measured.size.width > 0.0);
+        assert!(measured.size.height > 0.0);
+        assert!(measured.size.height >= 24.0);
     }
 }
