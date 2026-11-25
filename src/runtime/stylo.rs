@@ -1555,6 +1555,18 @@ impl StyloStyleEngine {
         insert_css!("box-sizing", values.slow_clone_box_sizing());
         insert_css!("position", values.get_box().get_position());
 
+        // Flexbox inputs are read from Stylo's computed Position and
+        // InheritedBox structs. This remains serialization only; layout is
+        // computed later by the native layout adapter.
+        insert_css!("direction", values.get_inherited_box().slow_clone_direction());
+        insert_css!("flex-direction", values.get_position().slow_clone_flex_direction());
+        insert_css!("flex-wrap", values.get_position().slow_clone_flex_wrap());
+        insert_css!("flex-grow", values.get_position().slow_clone_flex_grow());
+        insert_css!("flex-shrink", values.get_position().slow_clone_flex_shrink());
+        insert_css!("flex-basis", values.get_position().slow_clone_flex_basis());
+        insert_css!("row-gap", values.get_position().slow_clone_row_gap());
+        insert_css!("column-gap", values.get_position().slow_clone_column_gap());
+
         // Physical dimensions and edges are copied from Stylo's computed
         // values. This adapter does not parse declarations or resolve CSS.
         insert_css!("width", values.slow_clone_width());
@@ -2788,6 +2800,37 @@ mod tests {
             ("right", "11px"),
             ("bottom", "12px"),
             ("left", "13px"),
+        ] {
+            assert_eq!(
+                computed.get(property).map(String::as_str),
+                Some(expected),
+                "{property}"
+            );
+        }
+    }
+
+    #[test]
+    fn stylo_exports_computed_flexbox_inputs_without_re_resolving_css() {
+        let mut ui = UiModel::new();
+        let root = ui.create_root_deque().unwrap();
+        let element = ui.create_element(root, "section", End::Back).unwrap();
+
+        let mut stylo = StyloStyleEngine::new().unwrap();
+        stylo.add_stylesheet(
+            "section { direction: rtl; display: flex; flex-direction: row-reverse; flex-wrap: wrap-reverse; flex-grow: 2.5; flex-shrink: 0.25; flex-basis: 35%; row-gap: 12px; column-gap: 4%; }",
+        );
+        run_style_pass(&mut stylo, &mut StyleCommitAdapter, &mut ui).unwrap();
+
+        let computed = ui.computed_styles(element).unwrap();
+        for (property, expected) in [
+            ("direction", "rtl"),
+            ("flex-direction", "row-reverse"),
+            ("flex-wrap", "wrap-reverse"),
+            ("flex-grow", "2.5"),
+            ("flex-shrink", "0.25"),
+            ("flex-basis", "35%"),
+            ("row-gap", "12px"),
+            ("column-gap", "4%"),
         ] {
             assert_eq!(
                 computed.get(property).map(String::as_str),
