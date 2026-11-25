@@ -1,5 +1,5 @@
 use super::layout::{LayoutStyleError, TaffyTreeProjection, taffy_style_from_computed};
-use super::text::TextSystem;
+use super::text::{FontAttributes, TextSystem};
 use super::ui::{ElementHandle, LogicalProjection, UiElementKind};
 use std::collections::HashMap;
 use taffy::{
@@ -307,9 +307,11 @@ impl taffy::LayoutPartialTree for NativeLayoutPass<'_, '_> {
                                 text,
                                 max_width,
                                 font_size,
-                                &font_family,
-                                font_weight,
-                                &font_style,
+                                FontAttributes {
+                                    family: &font_family,
+                                    weight: font_weight,
+                                    style: &font_style,
+                                },
                                 line_height,
                             );
                             Size {
