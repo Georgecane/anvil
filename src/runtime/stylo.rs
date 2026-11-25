@@ -1617,6 +1617,7 @@ impl StyloStyleEngine {
         insert_css!("font-family", values.get_font().get_font_family());
         insert_css!("font-weight", values.get_font().get_font_weight());
         insert_css!("font-style", values.get_font().get_font_style());
+        insert_css!("font-stretch", values.get_font().get_font_stretch());
         insert_css!("line-height", values.get_font().get_line_height());
         result.insert(
             "opacity".into(),
@@ -2029,6 +2030,7 @@ mod tests {
         ui.set_style(container, "font-weight", "650").unwrap();
         ui.set_style(container, "font-style", "oblique 12deg")
             .unwrap();
+        ui.set_style(container, "font-stretch", "125%").unwrap();
         ui.set_style(container, "line-height", "1.75").unwrap();
 
         let mut stylo = StyloStyleEngine::new().unwrap();
@@ -2040,6 +2042,7 @@ mod tests {
         );
         assert_eq!(style_value(&ui, container, "font-weight"), "650");
         assert_eq!(style_value(&ui, container, "font-style"), "oblique 12deg");
+        assert_eq!(style_value(&ui, container, "font-stretch"), "125%");
         assert_eq!(style_value(&ui, container, "line-height"), "1.75");
         let _ = text;
     }
