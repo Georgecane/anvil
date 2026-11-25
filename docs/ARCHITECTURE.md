@@ -101,6 +101,18 @@ Stylo is the single authority for CSS parsing, selector matching, cascade, inher
 
 The current serialized `BTreeMap<String, String>` is an interchange boundary, not a commitment that every CSS value must forever be flattened to text. Typed computed values or retained Stylo value handles may be introduced where serialization loses required semantics, with explicit lifetime ownership.
 
+### 5.1 Computed-style delta stream
+
+Computed-style output has its own monotonic revision and journal, separate from the source UI mutation journal.
+
+- Replacing an element's computed map compares old and new property values and publishes a delta only when at least one property was actually added, removed, or changed.
+- Each delta records the stable `ElementHandle`, its revision, and the sorted set of changed property names. The latest computed values remain in `UiModel`; consumers read values there rather than carrying duplicate full maps.
+- Computed-style publication does not increment the source UI mutation revision and is never fed back into Stylo's input mutation stream.
+- Layout and Renderer have independent cursors. Acknowledging one consumer cannot discard records that the other has not consumed.
+- Journal entries are reclaimed only up to the minimum acknowledged revision across both consumers.
+- A consumer may coalesce multiple deltas for the same element and inspect its latest computed values. It must classify geometry-affecting and paint-only properties according to its own responsibility.
+- Consumers initialize from a complete current snapshot, then advance from their cursor. A newly initialized consumer may set its cursor to the current revision after taking that snapshot.
+
 ## 6. Layout is a solver, not another UI tree
 
 Layout is required because the UI hierarchy and computed CSS describe inputs and constraints, not final geometry. The Layout subsystem calculates the result; it does not own another copy of the UI.
@@ -223,7 +235,7 @@ A green CI run is necessary but not sufficient for architectural validation. A f
 
 The current implementation is an experimental baseline, not a reason to preserve incorrect boundaries. Rebuild in small, independently verifiable stages:
 
-1. **Change propagation contract:** distinguish source UI mutations from computed-style deltas; give Layout and Renderer independent invalidation cursors.
+1. **[Implemented foundation] Change propagation contract:** distinguish source UI mutations from computed-style deltas; give Layout and Renderer independent invalidation cursors.
 2. **Persistent derived layout state:** keep stable identity mappings and layout caches across passes; remove repeated whole-projection setup from ordinary frames.
 3. **Geometry-to-render contract:** pass final geometry/fragments and computed visual state to render preparation, while keeping GPU drawing independent.
 4. **Formatting coverage:** add correct block/inline, flex, grid, positioning, intrinsic sizing, and fragment behavior as separately tested milestones.
@@ -236,7 +248,7 @@ The order may change when code inspection demonstrates a dependency, but no stag
 
 The following are implementation gaps observed in the current source and must be closed during reconstruction:
 
-- `UiModel::replace_computed_styles` replaces the computed-style map without publishing a consumer-visible style-change revision.
+- The computed-style journal and independent Layout/Renderer cursors are implemented, but the concrete Layout and Renderer consumers are not yet wired to acknowledge and process their deltas.
 - `NativeLayoutPass` currently builds per-pass state and a full `ElementHandle` projection; its Taffy IDs and measurement caches are not persistent across passes.
 - Current layout computation accepts flex containers with children and text/leaf nodes, but rejects non-flex containers with children. The existence of Block/Grid Taffy features does not make these modes implemented.
 - The current `RenderInput` carries elements but no layout geometry/fragments or complete prepared visual state.

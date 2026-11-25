@@ -28,8 +28,8 @@ pub use style::{
 };
 pub use stylo::{StyloError, StyloStyleEngine};
 pub use ui::{
-    DequeHandle, ElementHandle, InitialDeque, InitialElement, LogicalProjection, UiElement,
-    UiElementKind, UiError, UiModel,
+    ComputedStyleChange, ComputedStyleConsumer, DequeHandle, ElementHandle, InitialDeque,
+    InitialElement, LogicalProjection, UiElement, UiElementKind, UiError, UiModel,
 };
 
 pub use text::TextSystem;

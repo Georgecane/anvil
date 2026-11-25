@@ -91,6 +91,47 @@ mod tests {
     }
 
     #[test]
+    fn applying_computed_styles_publishes_consumer_deltas_without_advancing_ui_input_revision() {
+        let mut ui = UiModel::new();
+        let root = ui.create_root_deque().unwrap();
+        let element = ui.create_element(root, "section", End::Back).unwrap();
+        let input_revision = ui.mutation_revision();
+
+        let mut first = StyleCommit::new();
+        first.push(ComputedStyle {
+            element,
+            properties: BTreeMap::from([
+                ("display".into(), "block".into()),
+                ("color".into(), "rgb(255, 0, 0)".into()),
+            ]),
+        });
+        StyleCommitAdapter.apply_style_commit(first, &mut ui).unwrap();
+
+        assert_eq!(ui.mutation_revision(), input_revision);
+        assert_eq!(ui.computed_style_revision(), 1);
+        assert_eq!(
+            ui.computed_style_changes_for(super::super::ui::ComputedStyleConsumer::Layout)
+                .next()
+                .unwrap()
+                .changed_properties,
+            ["color", "display"]
+        );
+
+        let mut unchanged = StyleCommit::new();
+        unchanged.push(ComputedStyle {
+            element,
+            properties: BTreeMap::from([
+                ("display".into(), "block".into()),
+                ("color".into(), "rgb(255, 0, 0)".into()),
+            ]),
+        });
+        StyleCommitAdapter
+            .apply_style_commit(unchanged, &mut ui)
+            .unwrap();
+        assert_eq!(ui.computed_style_revision(), 1);
+    }
+
+    #[test]
     fn invalid_style_batch_is_rejected_before_any_style_is_replaced() {
         let mut ui = UiModel::new();
         let root = ui.create_root_deque().unwrap();

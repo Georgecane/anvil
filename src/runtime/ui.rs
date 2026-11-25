@@ -153,6 +153,34 @@ pub(crate) struct UiMutation {
     pub hash_changed_deques: Vec<NodeId>,
 }
 
+/// Independent consumers of Stylo's computed-style output stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComputedStyleConsumer {
+    Layout,
+    Renderer,
+}
+
+impl ComputedStyleConsumer {
+    fn index(self) -> usize {
+        match self {
+            Self::Layout => 0,
+            Self::Renderer => 1,
+        }
+    }
+}
+
+/// A property-level delta produced by a successful computed-style commit.
+///
+/// The element's current values remain in UiModel; this journal records only
+/// which properties changed and when, so consumers can read the latest values
+/// without storing another copy of the complete computed-style map.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComputedStyleChange {
+    pub revision: u64,
+    pub element: ElementHandle,
+    pub changed_properties: Vec<String>,
+}
+
 pub(crate) struct UiBatchState {
     pub deques: HashMap<DequeHandle, VecDeque<ElementHandle>>,
     pub subtree_spans: HashMap<DequeHandle, VecDeque<usize>>,
@@ -277,6 +305,9 @@ pub struct UiModel {
     mutation_revision: u64,
     acknowledged_mutation_revision: u64,
     mutation_journal: VecDeque<UiMutation>,
+    computed_style_revision: u64,
+    computed_style_cursors: [u64; 2],
+    computed_style_journal: VecDeque<ComputedStyleChange>,
     deferred_registry_checks: Option<HashSet<NodeId>>,
     render_stack_batch_active: bool,
     deferred_render_stack_refresh: bool,
@@ -362,6 +393,9 @@ impl UiModel {
             mutation_revision: 0,
             acknowledged_mutation_revision: 0,
             mutation_journal: VecDeque::new(),
+            computed_style_revision: 0,
+            computed_style_cursors: [0; 2],
+            computed_style_journal: VecDeque::new(),
             deferred_registry_checks: None,
             render_stack_batch_active: false,
             deferred_render_stack_refresh: false,
@@ -380,6 +414,9 @@ impl UiModel {
             mutation_revision: 0,
             acknowledged_mutation_revision: 0,
             mutation_journal: VecDeque::new(),
+            computed_style_revision: 0,
+            computed_style_cursors: [0; 2],
+            computed_style_journal: VecDeque::new(),
             deferred_registry_checks: None,
             render_stack_batch_active: false,
             deferred_render_stack_refresh: false,
@@ -1391,15 +1428,104 @@ impl UiModel {
         Ok(())
     }
 
+    /// Replace Stylo's computed values and publish only actual property changes.
+    ///
+    /// This is deliberately separate from the source UI mutation journal:
+    /// consumers of computed styles must never cause Stylo to recascade its
+    /// own output by observing these changes as input mutations.
     pub fn replace_computed_styles(
         &mut self,
         handle: ElementHandle,
         styles: BTreeMap<String, String>,
     ) -> Result<(), UiError> {
-        self.element_mut(handle)
-            .ok_or(UiError::UnknownElement(handle))?
-            .computed_styles = styles;
+        let changed_properties = {
+            let element = self
+                .element_mut(handle)
+                .ok_or(UiError::UnknownElement(handle))?;
+            let mut changed = std::collections::BTreeSet::new();
+
+            for (name, previous) in &element.computed_styles {
+                if styles.get(name) != Some(previous) {
+                    changed.insert(name.clone());
+                }
+            }
+            for name in styles.keys() {
+                if !element.computed_styles.contains_key(name) {
+                    changed.insert(name.clone());
+                }
+            }
+
+            if changed.is_empty() {
+                return Ok(());
+            }
+
+            element.computed_styles = styles;
+            changed.into_iter().collect::<Vec<_>>()
+        };
+
+        self.computed_style_revision = self.computed_style_revision.wrapping_add(1);
+        self.computed_style_journal.push_back(ComputedStyleChange {
+            revision: self.computed_style_revision,
+            element: handle,
+            changed_properties,
+        });
         Ok(())
+    }
+
+    /// Current global revision of computed-style output.
+    pub fn computed_style_revision(&self) -> u64 {
+        self.computed_style_revision
+    }
+
+    /// Last computed-style revision acknowledged by one independent consumer.
+    pub fn computed_style_cursor(&self, consumer: ComputedStyleConsumer) -> u64 {
+        self.computed_style_cursors[consumer.index()]
+    }
+
+    /// Read the computed-style deltas after a consumer's current revision.
+    pub fn computed_style_changes_for(
+        &self,
+        consumer: ComputedStyleConsumer,
+    ) -> impl Iterator<Item = &ComputedStyleChange> {
+        self.computed_style_changes_since(self.computed_style_cursor(consumer))
+    }
+
+    /// Read the computed-style deltas after an explicit revision.
+    pub fn computed_style_changes_since(
+        &self,
+        revision: u64,
+    ) -> impl Iterator<Item = &ComputedStyleChange> {
+        self.computed_style_journal
+            .iter()
+            .filter(move |change| change.revision > revision)
+    }
+
+    /// Acknowledge delivery only for the specified consumer.
+    ///
+    /// Journal entries are reclaimed only after both Layout and Renderer
+    /// have advanced past them, preventing one consumer from erasing changes
+    /// before the other consumer has observed them.
+    pub fn acknowledge_computed_style_changes(
+        &mut self,
+        consumer: ComputedStyleConsumer,
+        revision: u64,
+    ) {
+        let cursor = &mut self.computed_style_cursors[consumer.index()];
+        *cursor = (*cursor).max(revision.min(self.computed_style_revision));
+
+        let acknowledged = self
+            .computed_style_cursors
+            .iter()
+            .copied()
+            .min()
+            .unwrap_or_default();
+        while self
+            .computed_style_journal
+            .front()
+            .is_some_and(|change| change.revision <= acknowledged)
+        {
+            self.computed_style_journal.pop_front();
+        }
     }
     pub fn computed_styles(&self, handle: ElementHandle) -> Option<&BTreeMap<String, String>> {
         Some(&self.element(handle)?.computed_styles)
@@ -2092,6 +2218,139 @@ mod ghost_revival_tests {
                 .unwrap()
                 .deque()
                 .is_ghost()
+        );
+    }
+}
+
+#[cfg(test)]
+mod computed_style_change_tests {
+    use super::*;
+
+    fn create_element() -> (UiModel, ElementHandle) {
+        let mut ui = UiModel::new();
+        let root = ui.create_root_deque().unwrap();
+        let element = ui.create_element(root, "div", End::Back).unwrap();
+        (ui, element)
+    }
+
+    #[test]
+    fn computed_style_changes_are_property_level_and_do_not_become_ui_mutations() {
+        let (mut ui, element) = create_element();
+        let source_revision = ui.mutation_revision();
+
+        ui.replace_computed_styles(
+            element,
+            BTreeMap::from([
+                ("color".into(), "red".into()),
+                ("width".into(), "100px".into()),
+            ]),
+        )
+        .unwrap();
+
+        assert_eq!(ui.mutation_revision(), source_revision);
+        assert_eq!(ui.computed_style_revision(), 1);
+        let first = ui.computed_style_changes_since(0).next().unwrap();
+        assert_eq!(first.element, element);
+        assert_eq!(first.changed_properties, ["color", "width"]);
+
+        // Reapplying an identical computed map must not create a false delta.
+        ui.replace_computed_styles(
+            element,
+            BTreeMap::from([
+                ("color".into(), "red".into()),
+                ("width".into(), "100px".into()),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(ui.computed_style_revision(), 1);
+
+        // Changed, removed, and newly-added properties are all reported.
+        ui.replace_computed_styles(
+            element,
+            BTreeMap::from([
+                ("color".into(), "blue".into()),
+                ("opacity".into(), "0.5".into()),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(ui.computed_style_revision(), 2);
+        let second = ui.computed_style_changes_since(1).next().unwrap();
+        assert_eq!(second.changed_properties, ["color", "opacity", "width"]);
+        assert_eq!(ui.computed_styles(element).unwrap().get("width"), None);
+    }
+
+    #[test]
+    fn layout_and_renderer_acknowledge_computed_style_changes_independently() {
+        let (mut ui, element) = create_element();
+        ui.replace_computed_styles(
+            element,
+            BTreeMap::from([("display".into(), "block".into())]),
+        )
+        .unwrap();
+        let first_revision = ui.computed_style_revision();
+
+        ui.acknowledge_computed_style_changes(
+            ComputedStyleConsumer::Layout,
+            first_revision,
+        );
+        assert_eq!(
+            ui.computed_style_cursor(ComputedStyleConsumer::Layout),
+            first_revision
+        );
+        assert_eq!(
+            ui.computed_style_cursor(ComputedStyleConsumer::Renderer),
+            0
+        );
+        assert_eq!(ui.computed_style_journal.len(), 1);
+        assert_eq!(
+            ui.computed_style_changes_for(ComputedStyleConsumer::Renderer)
+                .count(),
+            1
+        );
+
+        ui.replace_computed_styles(
+            element,
+            BTreeMap::from([("display".into(), "flex".into())]),
+        )
+        .unwrap();
+        let latest_revision = ui.computed_style_revision();
+
+        // Renderer may catch up independently; Layout's older cursor keeps
+        // both records alive until Layout consumes the second change.
+        ui.acknowledge_computed_style_changes(
+            ComputedStyleConsumer::Renderer,
+            latest_revision,
+        );
+        assert_eq!(ui.computed_style_journal.len(), 2);
+
+        ui.acknowledge_computed_style_changes(
+            ComputedStyleConsumer::Layout,
+            latest_revision,
+        );
+        assert!(ui.computed_style_journal.is_empty());
+    }
+
+    #[test]
+    fn computed_style_acknowledgement_is_monotonic_and_clamped_to_current_revision() {
+        let (mut ui, element) = create_element();
+        ui.replace_computed_styles(
+            element,
+            BTreeMap::from([("color".into(), "red".into())]),
+        )
+        .unwrap();
+
+        ui.acknowledge_computed_style_changes(
+            ComputedStyleConsumer::Layout,
+            u64::MAX,
+        );
+        assert_eq!(
+            ui.computed_style_cursor(ComputedStyleConsumer::Layout),
+            ui.computed_style_revision()
+        );
+        ui.acknowledge_computed_style_changes(ComputedStyleConsumer::Layout, 0);
+        assert_eq!(
+            ui.computed_style_cursor(ComputedStyleConsumer::Layout),
+            ui.computed_style_revision()
         );
     }
 }
