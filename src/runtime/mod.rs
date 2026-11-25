@@ -16,7 +16,7 @@ pub use framework::{
     bootstrap_from_snapshot,
 };
 pub use host::HostRuntime;
-pub use layout::{LayoutNodeId, TaffyTreeProjection};
+pub use layout::{LayoutNodeId, LayoutStyleError, TaffyTreeProjection, taffy_style_from_computed};
 pub use renderer::{
     GpuContext, GpuInitError, NativeRenderer, RenderElement, RenderInput, render_frame,
 };
