@@ -608,8 +608,9 @@ impl UiModel {
     /// Stylo is the source-mutation consumer. Layout registers independently
     /// when it takes its first complete snapshot.
     pub(crate) fn acknowledge_mutations(&mut self, revision: u64) {
-        self.acknowledged_mutation_revision =
-            self.acknowledged_mutation_revision.max(revision.min(self.mutation_revision));
+        self.acknowledged_mutation_revision = self
+            .acknowledged_mutation_revision
+            .max(revision.min(self.mutation_revision));
         self.prune_mutation_journal();
     }
 
