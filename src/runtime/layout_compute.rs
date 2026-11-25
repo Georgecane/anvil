@@ -3,8 +3,8 @@ use super::ui::{ElementHandle, LogicalProjection, UiElementKind};
 use std::collections::HashMap;
 use taffy::{
     AvailableSpace, Cache, CacheTree, Layout, LayoutInput, LayoutOutput, Size,
-    compute_cached_layout, compute_flexbox_layout, compute_leaf_layout, compute_oof_layout,
-    compute_hidden_layout, compute_root_layout, round_layout,
+    compute_cached_layout, compute_flexbox_layout, compute_hidden_layout, compute_leaf_layout,
+    compute_oof_layout, compute_root_layout, round_layout,
 };
 
 /// A failure to construct or execute a native layout pass.
@@ -81,7 +81,9 @@ impl<'a> NativeLayoutPass<'a> {
             while let Some(parent) = ancestor {
                 if states
                     .get(&parent)
-                    .is_some_and(|state: &ElementLayoutState| state.style.display == taffy::Display::None)
+                    .is_some_and(|state: &ElementLayoutState| {
+                        state.style.display == taffy::Display::None
+                    })
                 {
                     hidden_by_ancestor = true;
                     break;
