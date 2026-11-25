@@ -81,13 +81,18 @@ impl TextSystem {
         let mut buffer = Buffer::new_empty(Metrics::new(font_size, line_height));
         buffer.set_size(max_width, None);
         let first_family = first_font_family(font_family);
-        let family = match first_family.to_ascii_lowercase().as_str() {
-            "serif" => Family::Serif,
-            "sans-serif" => Family::SansSerif,
-            "monospace" => Family::Monospace,
-            "cursive" => Family::Cursive,
-            "fantasy" => Family::Fantasy,
-            name => Family::Name(name),
+        let family = if first_family.eq_ignore_ascii_case("serif") {
+            Family::Serif
+        } else if first_family.eq_ignore_ascii_case("sans-serif") {
+            Family::SansSerif
+        } else if first_family.eq_ignore_ascii_case("monospace") {
+            Family::Monospace
+        } else if first_family.eq_ignore_ascii_case("cursive") {
+            Family::Cursive
+        } else if first_family.eq_ignore_ascii_case("fantasy") {
+            Family::Fantasy
+        } else {
+            Family::Name(first_family)
         };
         let style = if font_style.starts_with("italic") {
             Style::Italic
@@ -117,3 +122,15 @@ impl Default for TextSystem {
         Self::new()
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::first_font_family;
+
+    #[test]
+    fn first_font_family_respects_quoted_commas_and_fallback_lists() {
+        assert_eq!(first_font_family("\"Family, With Comma\", serif"), "Family, With Comma");
+        assert_eq!(first_font_family("Arial, sans-serif"), "Arial");
+        assert_eq!(first_font_family("monospace"), "monospace");
+    }
+}
+
