@@ -3,7 +3,9 @@ use super::layout::{
     taffy_style_from_computed,
 };
 use super::text::{FontAttributes, TextSystem};
-use super::ui::{ComputedStyleConsumer, ElementHandle, LogicalProjection, UiModel, UiMutation, UiMutationKind};
+use super::ui::{
+    ComputedStyleConsumer, ElementHandle, LogicalProjection, UiModel, UiMutation, UiMutationKind,
+};
 use std::collections::{HashMap, HashSet};
 use taffy::{
     AvailableSpace, Cache, CacheTree, Layout, LayoutInput, LayoutOutput, Size,
@@ -17,8 +19,14 @@ pub enum LayoutComputeError {
     UnknownElement(ElementHandle),
     NodeIdSpaceExhausted,
     InvalidViewport,
-    UnsupportedNode { handle: ElementHandle, reason: &'static str },
-    InvalidStyle { handle: ElementHandle, source: LayoutStyleError },
+    UnsupportedNode {
+        handle: ElementHandle,
+        reason: &'static str,
+    },
+    InvalidStyle {
+        handle: ElementHandle,
+        source: LayoutStyleError,
+    },
 }
 
 struct ElementLayoutState {
@@ -40,12 +48,19 @@ struct ElementLayoutState {
 impl ElementLayoutState {
     fn new(style: taffy::Style) -> Self {
         Self {
-            style, text_content: None, font_size: 16.0,
-            font_family: "sans-serif".into(), font_weight: 400,
-            font_style: "normal".into(), font_stretch: "100%".into(),
-            line_height: 19.2, cache: Cache::new(),
-            unrounded: Layout::with_order(0), final_layout: Layout::with_order(0),
-            hoisted: Vec::new(), cache_invalidations: 0,
+            style,
+            text_content: None,
+            font_size: 16.0,
+            font_family: "sans-serif".into(),
+            font_weight: 400,
+            font_style: "normal".into(),
+            font_stretch: "100%".into(),
+            line_height: 19.2,
+            cache: Cache::new(),
+            unrounded: Layout::with_order(0),
+            final_layout: Layout::with_order(0),
+            hoisted: Vec::new(),
+            cache_invalidations: 0,
         }
     }
 }
@@ -54,15 +69,23 @@ fn layout_state_from_element(
     projection: &LogicalProjection<'_>,
     handle: ElementHandle,
 ) -> Result<ElementLayoutState, LayoutComputeError> {
-    let element = projection.element(handle).ok_or(LayoutComputeError::UnknownElement(handle))?;
+    let element = projection
+        .element(handle)
+        .ok_or(LayoutComputeError::UnknownElement(handle))?;
     let inherited = if element.kind == super::ui::UiElementKind::Text {
-        projection.parent_of(handle)
+        projection
+            .parent_of(handle)
             .and_then(|parent| projection.element(parent))
             .map(|parent| &parent.computed_styles)
-    } else { None };
+    } else {
+        None
+    };
     let computed = inherited.unwrap_or(&element.computed_styles);
     let style = if element.kind == super::ui::UiElementKind::Text {
-        taffy::Style { display: taffy::Display::Block, ..taffy::Style::default() }
+        taffy::Style {
+            display: taffy::Display::Block,
+            ..taffy::Style::default()
+        }
     } else {
         taffy_style_from_computed(computed)
             .map_err(|source| LayoutComputeError::InvalidStyle { handle, source })?
@@ -71,9 +94,11 @@ fn layout_state_from_element(
     let mut hidden = false;
     let mut ancestor = projection.parent_of(handle);
     while let Some(parent) = ancestor {
-        if projection.element(parent)
+        if projection
+            .element(parent)
             .and_then(|parent| parent.computed_styles.get("display"))
-            .is_some_and(|display| display == "none") {
+            .is_some_and(|display| display == "none")
+        {
             hidden = true;
             break;
         }
@@ -93,46 +118,125 @@ fn layout_state_from_element(
     let mut state = ElementLayoutState::new(style);
     if element.kind == super::ui::UiElementKind::Text {
         state.text_content = Some(element.text_content().unwrap_or_default().to_owned());
-        state.font_family = computed.get("font-family").cloned().unwrap_or_else(|| "sans-serif".into());
-        state.font_weight = computed.get("font-weight")
-            .and_then(|v| v.parse::<u16>().ok()).unwrap_or(400).clamp(1, 1000);
-        state.font_style = computed.get("font-style").cloned().unwrap_or_else(|| "normal".into());
-        state.font_stretch = computed.get("font-stretch").cloned().unwrap_or_else(|| "100%".into());
-        state.font_size = computed.get("font-size").and_then(|v| v.strip_suffix("px"))
+        state.font_family = computed
+            .get("font-family")
+            .cloned()
+            .unwrap_or_else(|| "sans-serif".into());
+        state.font_weight = computed
+            .get("font-weight")
+            .and_then(|v| v.parse::<u16>().ok())
+            .unwrap_or(400)
+            .clamp(1, 1000);
+        state.font_style = computed
+            .get("font-style")
+            .cloned()
+            .unwrap_or_else(|| "normal".into());
+        state.font_stretch = computed
+            .get("font-stretch")
+            .cloned()
+            .unwrap_or_else(|| "100%".into());
+        state.font_size = computed
+            .get("font-size")
+            .and_then(|v| v.strip_suffix("px"))
             .and_then(|v| v.trim().parse::<f32>().ok())
-            .filter(|v| v.is_finite() && *v > 0.0).unwrap_or(16.0);
-        state.line_height = computed.get("line-height").map(String::as_str).and_then(|v| {
-            if v == "normal" { Some(state.font_size * 1.2) }
-            else if let Some(px) = v.strip_suffix("px") { px.trim().parse::<f32>().ok() }
-            else { v.parse::<f32>().ok().map(|scale| state.font_size * scale) }
-        }).filter(|v| v.is_finite() && *v > 0.0).unwrap_or(state.font_size * 1.2);
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .unwrap_or(16.0);
+        state.line_height = computed
+            .get("line-height")
+            .map(String::as_str)
+            .and_then(|v| {
+                if v == "normal" {
+                    Some(state.font_size * 1.2)
+                } else if let Some(px) = v.strip_suffix("px") {
+                    px.trim().parse::<f32>().ok()
+                } else {
+                    v.parse::<f32>().ok().map(|scale| state.font_size * scale)
+                }
+            })
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .unwrap_or(state.font_size * 1.2);
     }
     Ok(state)
 }
 
 fn property_affects_layout(property: &str) -> bool {
-    matches!(property,
-        "display" | "box-sizing" | "position" | "direction" | "writing-mode"
-        | "width" | "height" | "min-width" | "min-height" | "max-width" | "max-height"
-        | "margin-top" | "margin-right" | "margin-bottom" | "margin-left"
-        | "padding-top" | "padding-right" | "padding-bottom" | "padding-left"
-        | "border-top-width" | "border-right-width" | "border-bottom-width" | "border-left-width"
-        | "top" | "right" | "bottom" | "left"
-        | "flex-direction" | "flex-wrap" | "flex-grow" | "flex-shrink" | "flex-basis"
-        | "row-gap" | "column-gap"
-        | "grid-template-columns" | "grid-template-rows" | "grid-template-areas"
-        | "grid-auto-columns" | "grid-auto-rows" | "grid-auto-flow" | "grid-column" | "grid-row"
-        | "align-content" | "align-items" | "align-self" | "justify-content" | "justify-items"
-        | "justify-self" | "place-content" | "place-items" | "place-self"
-        | "font-family" | "font-size" | "font-weight" | "font-style" | "font-stretch"
-        | "line-height" | "letter-spacing" | "word-spacing" | "white-space"
-        | "text-indent" | "text-transform" | "word-break" | "overflow-wrap" | "hyphens" | "tab-size"
+    matches!(
+        property,
+        "display"
+            | "box-sizing"
+            | "position"
+            | "direction"
+            | "writing-mode"
+            | "width"
+            | "height"
+            | "min-width"
+            | "min-height"
+            | "max-width"
+            | "max-height"
+            | "margin-top"
+            | "margin-right"
+            | "margin-bottom"
+            | "margin-left"
+            | "padding-top"
+            | "padding-right"
+            | "padding-bottom"
+            | "padding-left"
+            | "border-top-width"
+            | "border-right-width"
+            | "border-bottom-width"
+            | "border-left-width"
+            | "top"
+            | "right"
+            | "bottom"
+            | "left"
+            | "flex-direction"
+            | "flex-wrap"
+            | "flex-grow"
+            | "flex-shrink"
+            | "flex-basis"
+            | "row-gap"
+            | "column-gap"
+            | "grid-template-columns"
+            | "grid-template-rows"
+            | "grid-template-areas"
+            | "grid-auto-columns"
+            | "grid-auto-rows"
+            | "grid-auto-flow"
+            | "grid-column"
+            | "grid-row"
+            | "align-content"
+            | "align-items"
+            | "align-self"
+            | "justify-content"
+            | "justify-items"
+            | "justify-self"
+            | "place-content"
+            | "place-items"
+            | "place-self"
+            | "font-family"
+            | "font-size"
+            | "font-weight"
+            | "font-style"
+            | "font-stretch"
+            | "line-height"
+            | "letter-spacing"
+            | "word-spacing"
+            | "white-space"
+            | "text-indent"
+            | "text-transform"
+            | "word-break"
+            | "overflow-wrap"
+            | "hyphens"
+            | "tab-size"
     )
 }
 
 fn viewport_key(viewport: Size<f32>) -> Result<(u32, u32), LayoutComputeError> {
-    if !viewport.width.is_finite() || !viewport.height.is_finite()
-        || viewport.width < 0.0 || viewport.height < 0.0 {
+    if !viewport.width.is_finite()
+        || !viewport.height.is_finite()
+        || viewport.width < 0.0
+        || viewport.height < 0.0
+    {
         return Err(LayoutComputeError::InvalidViewport);
     }
     Ok((viewport.width.to_bits(), viewport.height.to_bits()))
@@ -150,15 +254,20 @@ pub struct NativeLayoutEngine {
 }
 
 impl Default for NativeLayoutEngine {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl NativeLayoutEngine {
     pub fn new() -> Self {
         Self {
-            node_index: LayoutNodeIndex::new(), states: HashMap::new(),
-            initialized: false, last_ui_mutation_revision: 0,
-            last_root: None, last_viewport: None,
+            node_index: LayoutNodeIndex::new(),
+            states: HashMap::new(),
+            initialized: false,
+            last_ui_mutation_revision: 0,
+            last_root: None,
+            last_viewport: None,
         }
     }
 
@@ -190,23 +299,33 @@ impl NativeLayoutEngine {
                 let mut index = LayoutNodeIndex::new();
                 let mut states = HashMap::with_capacity(handles.len());
                 for handle in handles {
-                    index.insert(handle).map_err(|()| LayoutComputeError::NodeIdSpaceExhausted)?;
+                    index
+                        .insert(handle)
+                        .map_err(|()| LayoutComputeError::NodeIdSpaceExhausted)?;
                     states.insert(handle, layout_state_from_element(&projection, handle)?);
                 }
                 self.node_index = index;
                 self.states = states;
                 self.initialized = true;
             } else {
-                let mutations = projection.mutations_since(self.last_ui_mutation_revision)
-                    .cloned().collect::<Vec<_>>();
-                let style_changes = projection.computed_style_changes_for(ComputedStyleConsumer::Layout)
-                    .cloned().collect::<Vec<_>>();
+                let mutations = projection
+                    .mutations_since(self.last_ui_mutation_revision)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let style_changes = projection
+                    .computed_style_changes_for(ComputedStyleConsumer::Layout)
+                    .cloned()
+                    .collect::<Vec<_>>();
                 for mutation in &mutations {
                     layout_required |= self.apply_ui_mutation(&projection, mutation)?;
                 }
                 for change in &style_changes {
-                    if change.changed_properties.iter().any(|p| property_affects_layout(p))
-                        && projection.element(change.element).is_some() {
+                    if change
+                        .changed_properties
+                        .iter()
+                        .any(|p| property_affects_layout(p))
+                        && projection.element(change.element).is_some()
+                    {
                         self.refresh_subtree(&projection, change.element)?;
                         self.invalidate_path(&projection, change.element);
                         layout_required = true;
@@ -219,15 +338,23 @@ impl NativeLayoutEngine {
             }
             if layout_required {
                 let persistent = PersistentTaffyTreeProjection::new(projection, &self.node_index);
-                let root_id = persistent.node_id(root)
-                    .ok_or(LayoutComputeError::UnknownElement(root))?.0;
+                let root_id = persistent
+                    .node_id(root)
+                    .ok_or(LayoutComputeError::UnknownElement(root))?
+                    .0;
                 let mut pass = NativeLayoutPass {
-                    projection: persistent, text_system, states: &mut self.states,
+                    projection: persistent,
+                    text_system,
+                    states: &mut self.states,
                 };
-                compute_root_layout(&mut pass, root_id, Size {
-                    width: AvailableSpace::Definite(f32::from_bits(viewport.0)),
-                    height: AvailableSpace::Definite(f32::from_bits(viewport.1)),
-                });
+                compute_root_layout(
+                    &mut pass,
+                    root_id,
+                    Size {
+                        width: AvailableSpace::Definite(f32::from_bits(viewport.0)),
+                        height: AvailableSpace::Definite(f32::from_bits(viewport.1)),
+                    },
+                );
                 round_layout(&mut pass, root_id);
             }
             (ui_revision, style_revision)
@@ -256,7 +383,9 @@ impl NativeLayoutEngine {
             }
             UiMutationKind::Attribute | UiMutationKind::InlineStyle => Ok(false),
             UiMutationKind::Insert => {
-                for handle in &mutation.affected { self.refresh_subtree(projection, *handle)?; }
+                for handle in &mutation.affected {
+                    self.refresh_subtree(projection, *handle)?;
+                }
                 if let Some(context) = mutation.new_parent.or(mutation.element) {
                     self.invalidate_path(projection, context);
                 }
@@ -267,14 +396,25 @@ impl NativeLayoutEngine {
                     self.states.remove(handle);
                     self.node_index.remove(*handle);
                 }
-                if let Some(parent) = mutation.old_parent { self.invalidate_path(projection, parent); }
+                if let Some(parent) = mutation.old_parent {
+                    self.invalidate_path(projection, parent);
+                }
                 Ok(true)
             }
             UiMutationKind::Move => {
-                if let Some(anchor) = mutation.element { self.refresh_subtree(projection, anchor)?; }
-                else { for handle in &mutation.affected { self.refresh_subtree(projection, *handle)?; } }
-                if let Some(parent) = mutation.old_parent { self.invalidate_path(projection, parent); }
-                if let Some(parent) = mutation.new_parent { self.invalidate_path(projection, parent); }
+                if let Some(anchor) = mutation.element {
+                    self.refresh_subtree(projection, anchor)?;
+                } else {
+                    for handle in &mutation.affected {
+                        self.refresh_subtree(projection, *handle)?;
+                    }
+                }
+                if let Some(parent) = mutation.old_parent {
+                    self.invalidate_path(projection, parent);
+                }
+                if let Some(parent) = mutation.new_parent {
+                    self.invalidate_path(projection, parent);
+                }
                 Ok(true)
             }
         }
@@ -288,10 +428,16 @@ impl NativeLayoutEngine {
         let mut pending = vec![root];
         let mut visited = HashSet::new();
         while let Some(handle) = pending.pop() {
-            if !visited.insert(handle) || projection.element(handle).is_none() { continue; }
-            self.node_index.insert(handle).map_err(|()| LayoutComputeError::NodeIdSpaceExhausted)?;
+            if !visited.insert(handle) || projection.element(handle).is_none() {
+                continue;
+            }
+            self.node_index
+                .insert(handle)
+                .map_err(|()| LayoutComputeError::NodeIdSpaceExhausted)?;
             let mut next = layout_state_from_element(projection, handle)?;
-            next.cache_invalidations = self.states.get(&handle)
+            next.cache_invalidations = self
+                .states
+                .get(&handle)
                 .map_or(0, |old| old.cache_invalidations.saturating_add(1));
             self.states.insert(handle, next);
             let mut children = projection.children_of(handle);
@@ -318,10 +464,16 @@ impl NativeLayoutEngine {
     pub fn node_id(&self, handle: ElementHandle) -> Option<LayoutNodeId> {
         self.node_index.node_id(handle).map(LayoutNodeId)
     }
-    pub fn state_count(&self) -> usize { self.states.len() }
-    pub fn node_count(&self) -> usize { self.node_index.len() }
+    pub fn state_count(&self) -> usize {
+        self.states.len()
+    }
+    pub fn node_count(&self) -> usize {
+        self.node_index.len()
+    }
     pub fn cache_invalidation_count(&self, handle: ElementHandle) -> Option<u64> {
-        self.states.get(&handle).map(|state| state.cache_invalidations)
+        self.states
+            .get(&handle)
+            .map(|state| state.cache_invalidations)
     }
 }
 
@@ -340,7 +492,9 @@ impl NativeLayoutPass<'_, '_, '_, '_> {
     }
     fn state_mut(&mut self, node_id: taffy::NodeId) -> &mut ElementLayoutState {
         let handle = self.handle(node_id);
-        self.states.get_mut(&handle).expect("layout state exists for persistent node id")
+        self.states
+            .get_mut(&handle)
+            .expect("layout state exists for persistent node id")
     }
 }
 
@@ -355,7 +509,12 @@ impl taffy::TraversePartialTree for NativeLayoutPass<'_, '_, '_, '_> {
             .projection()
             .children_of(self.handle(parent_node_id))
             .into_iter()
-            .map(|handle| self.projection.node_id(handle).expect("canonical child has a persistent layout ID").0)
+            .map(|handle| {
+                self.projection
+                    .node_id(handle)
+                    .expect("canonical child has a persistent layout ID")
+                    .0
+            })
             .collect::<Vec<_>>()
             .into_iter()
     }
@@ -370,7 +529,10 @@ impl taffy::TraversePartialTree for NativeLayoutPass<'_, '_, '_, '_> {
     fn get_child_id(&self, parent_node_id: taffy::NodeId, child_index: usize) -> taffy::NodeId {
         let parent = self.handle(parent_node_id);
         let child = self.projection.projection().children_of(parent)[child_index];
-        self.projection.node_id(child).expect("canonical child has a persistent layout ID").0
+        self.projection
+            .node_id(child)
+            .expect("canonical child has a persistent layout ID")
+            .0
     }
 }
 
@@ -724,15 +886,30 @@ mod compute_tests {
         let deque = ui.create_root_deque().unwrap();
         let root = ui.create_element(deque, "main", End::Back).unwrap();
         let child = ui.create_element(deque, "section", End::Front).unwrap();
-        ui.replace_computed_styles(root, [
-            ("display".into(), "flex".into()), ("width".into(), "300px".into()),
-            ("height".into(), "100px".into()),
-        ].into()).unwrap();
-        ui.replace_computed_styles(child, [
-            ("display".into(), "block".into()), ("width".into(), "80px".into()),
-            ("height".into(), "20px".into()),
-        ].into()).unwrap();
-        let viewport = Size { width: 300.0, height: 100.0 };
+        ui.replace_computed_styles(
+            root,
+            [
+                ("display".into(), "flex".into()),
+                ("width".into(), "300px".into()),
+                ("height".into(), "100px".into()),
+            ]
+            .into(),
+        )
+        .unwrap();
+        ui.replace_computed_styles(
+            child,
+            [
+                ("display".into(), "block".into()),
+                ("width".into(), "80px".into()),
+                ("height".into(), "20px".into()),
+            ]
+            .into(),
+        )
+        .unwrap();
+        let viewport = Size {
+            width: 300.0,
+            height: 100.0,
+        };
         let mut text = TextSystem::new();
         let mut engine = NativeLayoutEngine::new();
         engine.compute(&mut ui, &mut text, root, viewport).unwrap();
@@ -746,8 +923,14 @@ mod compute_tests {
         assert_eq!(engine.node_id(root), Some(root_id));
         assert_eq!(engine.node_id(child), Some(child_id));
         assert_eq!(engine.state_count(), 2);
-        assert_eq!(engine.cache_invalidation_count(root), Some(root_invalidations));
-        assert_eq!(engine.cache_invalidation_count(child), Some(child_invalidations));
+        assert_eq!(
+            engine.cache_invalidation_count(root),
+            Some(root_invalidations)
+        );
+        assert_eq!(
+            engine.cache_invalidation_count(child),
+            Some(child_invalidations)
+        );
         assert_eq!(engine.layout(root), Some(root_layout));
         assert_eq!(engine.layout(child), Some(child_layout));
     }
@@ -758,18 +941,29 @@ mod compute_tests {
         let deque = ui.create_root_deque().unwrap();
         let root = ui.create_element(deque, "main", End::Back).unwrap();
         let text_handle = ui.create_text(deque, "x", End::Front).unwrap();
-        ui.replace_computed_styles(root, [
-            ("display".into(), "flex".into()), ("width".into(), "600px".into()),
-            ("height".into(), "100px".into()), ("font-size".into(), "24px".into()),
-        ].into()).unwrap();
-        let viewport = Size { width: 600.0, height: 100.0 };
+        ui.replace_computed_styles(
+            root,
+            [
+                ("display".into(), "flex".into()),
+                ("width".into(), "600px".into()),
+                ("height".into(), "100px".into()),
+                ("font-size".into(), "24px".into()),
+            ]
+            .into(),
+        )
+        .unwrap();
+        let viewport = Size {
+            width: 600.0,
+            height: 100.0,
+        };
         let mut text = TextSystem::new();
         let mut engine = NativeLayoutEngine::new();
         engine.compute(&mut ui, &mut text, root, viewport).unwrap();
         let node_id = engine.node_id(text_handle).unwrap();
         let before = engine.layout(text_handle).unwrap().size.width;
         let invalidations = engine.cache_invalidation_count(text_handle).unwrap();
-        ui.set_text(text_handle, "a much longer native text measurement").unwrap();
+        ui.set_text(text_handle, "a much longer native text measurement")
+            .unwrap();
         engine.compute(&mut ui, &mut text, root, viewport).unwrap();
         assert!(engine.layout(text_handle).unwrap().size.width > before);
         assert_eq!(engine.node_id(text_handle), Some(node_id));
@@ -781,11 +975,21 @@ mod compute_tests {
         let mut ui = UiModel::new();
         let deque = ui.create_root_deque().unwrap();
         let root = ui.create_element(deque, "main", End::Back).unwrap();
-        ui.replace_computed_styles(root, [
-            ("display".into(), "flex".into()), ("width".into(), "300px".into()),
-            ("height".into(), "100px".into()), ("color".into(), "rgb(255, 0, 0)".into()),
-        ].into()).unwrap();
-        let viewport = Size { width: 500.0, height: 200.0 };
+        ui.replace_computed_styles(
+            root,
+            [
+                ("display".into(), "flex".into()),
+                ("width".into(), "300px".into()),
+                ("height".into(), "100px".into()),
+                ("color".into(), "rgb(255, 0, 0)".into()),
+            ]
+            .into(),
+        )
+        .unwrap();
+        let viewport = Size {
+            width: 500.0,
+            height: 200.0,
+        };
         let mut text = TextSystem::new();
         let mut engine = NativeLayoutEngine::new();
         engine.compute(&mut ui, &mut text, root, viewport).unwrap();
@@ -793,22 +997,39 @@ mod compute_tests {
         let initial_invalidations = engine.cache_invalidation_count(root).unwrap();
         assert_eq!(engine.layout(root).unwrap().size.width, 300.0);
 
-        ui.replace_computed_styles(root, [
-            ("display".into(), "flex".into()), ("width".into(), "400px".into()),
-            ("height".into(), "100px".into()), ("color".into(), "rgb(255, 0, 0)".into()),
-        ].into()).unwrap();
+        ui.replace_computed_styles(
+            root,
+            [
+                ("display".into(), "flex".into()),
+                ("width".into(), "400px".into()),
+                ("height".into(), "100px".into()),
+                ("color".into(), "rgb(255, 0, 0)".into()),
+            ]
+            .into(),
+        )
+        .unwrap();
         engine.compute(&mut ui, &mut text, root, viewport).unwrap();
         assert_eq!(engine.layout(root).unwrap().size.width, 400.0);
         let geometry_invalidations = engine.cache_invalidation_count(root).unwrap();
         assert!(geometry_invalidations > initial_invalidations);
 
-        ui.replace_computed_styles(root, [
-            ("display".into(), "flex".into()), ("width".into(), "400px".into()),
-            ("height".into(), "100px".into()), ("color".into(), "rgb(0, 0, 255)".into()),
-        ].into()).unwrap();
+        ui.replace_computed_styles(
+            root,
+            [
+                ("display".into(), "flex".into()),
+                ("width".into(), "400px".into()),
+                ("height".into(), "100px".into()),
+                ("color".into(), "rgb(0, 0, 255)".into()),
+            ]
+            .into(),
+        )
+        .unwrap();
         engine.compute(&mut ui, &mut text, root, viewport).unwrap();
         assert_eq!(engine.node_id(root), Some(node_id));
-        assert_eq!(engine.cache_invalidation_count(root), Some(geometry_invalidations));
+        assert_eq!(
+            engine.cache_invalidation_count(root),
+            Some(geometry_invalidations)
+        );
         assert_eq!(engine.layout(root).unwrap().size.width, 400.0);
     }
 
@@ -818,25 +1039,56 @@ mod compute_tests {
         let deque = ui.create_root_deque().unwrap();
         let root = ui.create_element(deque, "main", End::Back).unwrap();
         let child = ui.create_element(deque, "section", End::Front).unwrap();
-        ui.replace_computed_styles(root, [
-            ("display".into(), "flex".into()), ("width".into(), "300px".into()),
-            ("height".into(), "100px".into()),
-        ].into()).unwrap();
-        ui.replace_computed_styles(child, [
-            ("display".into(), "block".into()), ("width".into(), "80px".into()),
-            ("height".into(), "20px".into()),
-        ].into()).unwrap();
+        ui.replace_computed_styles(
+            root,
+            [
+                ("display".into(), "flex".into()),
+                ("width".into(), "300px".into()),
+                ("height".into(), "100px".into()),
+            ]
+            .into(),
+        )
+        .unwrap();
+        ui.replace_computed_styles(
+            child,
+            [
+                ("display".into(), "block".into()),
+                ("width".into(), "80px".into()),
+                ("height".into(), "20px".into()),
+            ]
+            .into(),
+        )
+        .unwrap();
         let mut text = TextSystem::new();
         let mut engine = NativeLayoutEngine::new();
-        engine.compute(&mut ui, &mut text, root, Size { width: 300.0, height: 100.0 }).unwrap();
+        engine
+            .compute(
+                &mut ui,
+                &mut text,
+                root,
+                Size {
+                    width: 300.0,
+                    height: 100.0,
+                },
+            )
+            .unwrap();
         assert_eq!(engine.state_count(), 2);
         assert!(engine.node_id(child).is_some());
         ui.remove_subtree(child).unwrap();
-        engine.compute(&mut ui, &mut text, root, Size { width: 300.0, height: 100.0 }).unwrap();
+        engine
+            .compute(
+                &mut ui,
+                &mut text,
+                root,
+                Size {
+                    width: 300.0,
+                    height: 100.0,
+                },
+            )
+            .unwrap();
         assert_eq!(engine.state_count(), 1);
         assert_eq!(engine.layout(child), None);
         assert_eq!(engine.node_id(child), None);
         assert!(engine.layout(root).is_some());
     }
-
 }

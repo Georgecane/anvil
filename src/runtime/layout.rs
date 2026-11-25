@@ -327,10 +327,16 @@ pub(crate) struct LayoutNodeIndex {
 }
 
 impl LayoutNodeIndex {
-    pub(crate) fn new() -> Self { Self::default() }
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
     pub(crate) fn insert(&mut self, handle: ElementHandle) -> Result<taffy::NodeId, ()> {
-        if let Some(node_id) = self.node_ids.get(&handle) { return Ok(*node_id); }
-        if self.handles.len() > u32::MAX as usize { return Err(()); }
+        if let Some(node_id) = self.node_ids.get(&handle) {
+            return Ok(*node_id);
+        }
+        if self.handles.len() > u32::MAX as usize {
+            return Err(());
+        }
         let node_id = taffy::NodeId::from(self.handles.len());
         self.handles.push(Some(handle));
         self.node_ids.insert(handle, node_id);
@@ -347,7 +353,9 @@ impl LayoutNodeIndex {
     pub(crate) fn handle(&self, node_id: taffy::NodeId) -> Option<ElementHandle> {
         self.handles.get(usize::from(node_id)).copied().flatten()
     }
-    pub(crate) fn len(&self) -> usize { self.node_ids.len() }
+    pub(crate) fn len(&self) -> usize {
+        self.node_ids.len()
+    }
 }
 
 /// Per-pass traversal adapter. It borrows the canonical projection and
@@ -360,13 +368,19 @@ impl<'projection, 'index> PersistentTaffyTreeProjection<'projection, 'index> {
     pub(crate) fn new(
         projection: LogicalProjection<'projection>,
         index: &'index LayoutNodeIndex,
-    ) -> Self { Self { projection, index } }
-    pub(crate) fn projection(&self) -> &LogicalProjection<'projection> { &self.projection }
+    ) -> Self {
+        Self { projection, index }
+    }
+    pub(crate) fn projection(&self) -> &LogicalProjection<'projection> {
+        &self.projection
+    }
     pub(crate) fn node_id(&self, handle: ElementHandle) -> Option<LayoutNodeId> {
         self.index.node_id(handle).map(LayoutNodeId)
     }
     pub(crate) fn handle_for_taffy_id(&self, node_id: taffy::NodeId) -> ElementHandle {
-        self.index.handle(node_id).expect("reachable layout node has a live ElementHandle")
+        self.index
+            .handle(node_id)
+            .expect("reachable layout node has a live ElementHandle")
     }
 }
 
