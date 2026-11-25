@@ -2292,18 +2292,12 @@ mod computed_style_change_tests {
         .unwrap();
         let first_revision = ui.computed_style_revision();
 
-        ui.acknowledge_computed_style_changes(
-            ComputedStyleConsumer::Layout,
-            first_revision,
-        );
+        ui.acknowledge_computed_style_changes(ComputedStyleConsumer::Layout, first_revision);
         assert_eq!(
             ui.computed_style_cursor(ComputedStyleConsumer::Layout),
             first_revision
         );
-        assert_eq!(
-            ui.computed_style_cursor(ComputedStyleConsumer::Renderer),
-            0
-        );
+        assert_eq!(ui.computed_style_cursor(ComputedStyleConsumer::Renderer), 0);
         assert_eq!(ui.computed_style_journal.len(), 1);
         assert_eq!(
             ui.computed_style_changes_for(ComputedStyleConsumer::Renderer)
@@ -2311,11 +2305,8 @@ mod computed_style_change_tests {
             1
         );
 
-        ui.replace_computed_styles(
-            element,
-            BTreeMap::from([("display".into(), "flex".into())]),
-        )
-        .unwrap();
+        ui.replace_computed_styles(element, BTreeMap::from([("display".into(), "flex".into())]))
+            .unwrap();
         let latest_revision = ui.computed_style_revision();
 
         // Renderer receives both deltas. Its acknowledgement lets the
@@ -2325,32 +2316,20 @@ mod computed_style_change_tests {
                 .count(),
             2
         );
-        ui.acknowledge_computed_style_changes(
-            ComputedStyleConsumer::Renderer,
-            latest_revision,
-        );
+        ui.acknowledge_computed_style_changes(ComputedStyleConsumer::Renderer, latest_revision);
         assert_eq!(ui.computed_style_journal.len(), 1);
 
-        ui.acknowledge_computed_style_changes(
-            ComputedStyleConsumer::Layout,
-            latest_revision,
-        );
+        ui.acknowledge_computed_style_changes(ComputedStyleConsumer::Layout, latest_revision);
         assert!(ui.computed_style_journal.is_empty());
     }
 
     #[test]
     fn computed_style_acknowledgement_is_monotonic_and_clamped_to_current_revision() {
         let (mut ui, element) = create_element();
-        ui.replace_computed_styles(
-            element,
-            BTreeMap::from([("color".into(), "red".into())]),
-        )
-        .unwrap();
+        ui.replace_computed_styles(element, BTreeMap::from([("color".into(), "red".into())]))
+            .unwrap();
 
-        ui.acknowledge_computed_style_changes(
-            ComputedStyleConsumer::Layout,
-            u64::MAX,
-        );
+        ui.acknowledge_computed_style_changes(ComputedStyleConsumer::Layout, u64::MAX);
         assert_eq!(
             ui.computed_style_cursor(ComputedStyleConsumer::Layout),
             ui.computed_style_revision()

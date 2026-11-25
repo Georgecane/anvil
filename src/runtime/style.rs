@@ -105,7 +105,9 @@ mod tests {
                 ("color".into(), "rgb(255, 0, 0)".into()),
             ]),
         });
-        StyleCommitAdapter.apply_style_commit(first, &mut ui).unwrap();
+        StyleCommitAdapter
+            .apply_style_commit(first, &mut ui)
+            .unwrap();
 
         assert_eq!(ui.mutation_revision(), input_revision);
         assert_eq!(ui.computed_style_revision(), 1);
