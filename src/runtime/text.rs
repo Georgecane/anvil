@@ -1,4 +1,5 @@
 use cosmic_text::fontdb::ID as FontFaceId;
+use cosmic_text::skrifa::MetadataProvider;
 use cosmic_text::{
     Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Stretch, Style, SwashCache, Weight,
 };
