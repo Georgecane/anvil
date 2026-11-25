@@ -395,7 +395,7 @@ mod tests {
         let text = "a\\u{301}b";
         let spans = font_family_spans(text, 2, |family, character| match family {
             0 => character == 'a',
-            1 => character == 'a' || character == '\\u{301}' || character == 'b',
+            1 => character == 'a' || character == '\u{301}' || character == 'b',
             _ => false,
         });
 
