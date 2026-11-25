@@ -303,17 +303,15 @@ impl taffy::LayoutPartialTree for NativeLayoutPass<'_, '_> {
                                 AvailableSpace::Definite(width) => Some(width),
                                 AvailableSpace::MinContent | AvailableSpace::MaxContent => None,
                             };
-                            let (measured_width, measured_height) =
-                                tree.text_system
-                                    .measure(
-                                    text,
-                                    max_width,
-                                    font_size,
-                                    &font_family,
-                                    font_weight,
-                                    &font_style,
-                                    line_height,
-                                );
+                            let (measured_width, measured_height) = tree.text_system.measure(
+                                text,
+                                max_width,
+                                font_size,
+                                &font_family,
+                                font_weight,
+                                &font_style,
+                                line_height,
+                            );
                             Size {
                                 width: known_dimensions.width.unwrap_or(measured_width),
                                 height: known_dimensions.height.unwrap_or(measured_height),
