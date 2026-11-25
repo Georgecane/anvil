@@ -1,0 +1,376 @@
+use super::ui::{ElementHandle, LogicalProjection, UiElementKind};
+use super::layout::{taffy_style_from_computed, LayoutStyleError, TaffyTreeProjection};
+use std::collections::HashMap;
+use taffy::{
+    compute_cached_layout, compute_flexbox_layout, compute_leaf_layout, compute_oof_layout,
+    compute_root_layout, round_layout, AvailableSpace, Cache, CacheTree, Layout, LayoutInput,
+    LayoutOutput, Size,
+};
+
+/// A failure to construct or execute a native layout pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LayoutComputeError {
+    MissingRoot,
+    UnknownElement(ElementHandle),
+    UnsupportedNode {
+        handle: ElementHandle,
+        reason: &'static str,
+    },
+    InvalidStyle {
+        handle: ElementHandle,
+        source: LayoutStyleError,
+    },
+}
+
+/// Derived layout data for one canonical element. It is keyed by stable
+/// ElementHandle and never owns element topology.
+struct ElementLayoutState {
+    style: taffy::Style,
+    cache: Cache,
+    unrounded: Layout,
+    final_layout: Layout,
+    hoisted: Vec<taffy::NodeId>,
+}
+
+impl ElementLayoutState {
+    fn new(style: taffy::Style) -> Self {
+        Self {
+            style,
+            cache: Cache::new(),
+            unrounded: Layout::with_order(0),
+            final_layout: Layout::with_order(0),
+            hoisted: Vec::new(),
+        }
+    }
+}
+
+/// One-shot native layout computation over the canonical logical projection.
+///
+/// The projection remains the only source of parent/child relationships.
+/// Taffy NodeIds are ephemeral indices for this pass; all persistent derived
+/// state is keyed by ElementHandle.
+pub struct NativeLayoutPass<'a> {
+    projection: TaffyTreeProjection<'a>,
+    states: HashMap<ElementHandle, ElementLayoutState>,
+}
+
+impl<'a> NativeLayoutPass<'a> {
+    pub fn new(projection: LogicalProjection<'a>) -> Result<Self, LayoutComputeError> {
+        let taffy_projection = TaffyTreeProjection::new(projection);
+        let mut states = HashMap::new();
+
+        for handle in taffy_projection.projection().handles() {
+            let element = taffy_projection
+                .projection()
+                .element(handle)
+                .ok_or(LayoutComputeError::UnknownElement(handle))?;
+
+            if element.kind == UiElementKind::Text {
+                return Err(LayoutComputeError::UnsupportedNode {
+                    handle,
+                    reason: "text measurement is not connected to the native layout pass",
+                });
+            }
+
+            let style = taffy_style_from_computed(&element.computed_styles).map_err(|source| {
+                LayoutComputeError::InvalidStyle { handle, source }
+            })?;
+
+            let children = taffy_projection.projection().children_of(handle);
+            if !children.is_empty() && style.display != taffy::Display::Flex {
+                return Err(LayoutComputeError::UnsupportedNode {
+                    handle,
+                    reason: "only flex containers may have children in this layout milestone",
+                });
+            }
+            if style.display == taffy::Display::None {
+                return Err(LayoutComputeError::UnsupportedNode {
+                    handle,
+                    reason: "display:none hidden-layout handling is not connected yet",
+                });
+            }
+
+            states.insert(handle, ElementLayoutState::new(style));
+        }
+
+        Ok(Self {
+            projection: taffy_projection,
+            states,
+        })
+    }
+
+    /// Compute a full layout against a definite viewport in CSS pixels.
+    pub fn compute(
+        &mut self,
+        root: ElementHandle,
+        viewport: Size<f32>,
+    ) -> Result<(), LayoutComputeError> {
+        let root_id = self
+            .projection
+            .node_id(root)
+            .ok_or(LayoutComputeError::UnknownElement(root))?
+            .0;
+
+        compute_root_layout(
+            self,
+            root_id,
+            Size {
+                width: AvailableSpace::Definite(viewport.width),
+                height: AvailableSpace::Definite(viewport.height),
+            },
+        );
+        round_layout(self, root_id);
+        Ok(())
+    }
+
+    /// Return the final pixel-rounded layout rectangle for an element.
+    pub fn layout(&self, handle: ElementHandle) -> Option<Layout> {
+        self.states.get(&handle).map(|state| state.final_layout)
+    }
+
+    fn handle(&self, node_id: taffy::NodeId) -> ElementHandle {
+        self.projection.handle_for_taffy_id(node_id)
+    }
+
+    fn state(&self, node_id: taffy::NodeId) -> &ElementLayoutState {
+        &self.states[&self.handle(node_id)]
+    }
+
+    fn state_mut(&mut self, node_id: taffy::NodeId) -> &mut ElementLayoutState {
+        let handle = self.handle(node_id);
+        self.states.get_mut(&handle).expect("layout state exists for every projected element")
+    }
+}
+
+impl taffy::TraversePartialTree for NativeLayoutPass<'_> {
+    type ChildIter<'b>
+        = std::vec::IntoIter<taffy::NodeId>
+    where
+        Self: 'b;
+
+    fn child_ids(&self, parent_node_id: taffy::NodeId) -> Self::ChildIter<'_> {
+        self.projection
+            .projection()
+            .children_of(self.handle(parent_node_id))
+            .into_iter()
+            .filter_map(|handle| self.projection.node_ids.get(&handle).copied())
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    fn child_count(&self, parent_node_id: taffy::NodeId) -> usize {
+        self.projection
+            .projection()
+            .children_of(self.handle(parent_node_id))
+            .len()
+    }
+
+    fn get_child_id(&self, parent_node_id: taffy::NodeId, child_index: usize) -> taffy::NodeId {
+        let parent = self.handle(parent_node_id);
+        let child = self.projection.projection().children_of(parent)[child_index];
+        self.projection.node_ids[&child]
+    }
+}
+
+impl taffy::TraverseTree for NativeLayoutPass<'_> {}
+
+impl taffy::LayoutPartialTree for NativeLayoutPass<'_> {
+    type CustomIdent = String;
+    type CoreContainerStyle<'b>
+        = &'b taffy::Style
+    where
+        Self: 'b;
+
+    fn get_core_container_style(&self, node_id: taffy::NodeId) -> Self::CoreContainerStyle<'_> {
+        &self.state(node_id).style
+    }
+
+    fn set_unrounded_layout(&mut self, node_id: taffy::NodeId, layout: &Layout) {
+        self.state_mut(node_id).unrounded = *layout;
+    }
+
+    fn compute_child_layout(
+        &mut self,
+        node_id: taffy::NodeId,
+        inputs: LayoutInput,
+    ) -> LayoutOutput {
+        compute_cached_layout(self, node_id, inputs, |tree, node_id, inputs| {
+            let style = tree.state(node_id).style.clone();
+            let mut output = if style.display == taffy::Display::Flex {
+                compute_flexbox_layout(tree, node_id, inputs)
+            } else {
+                compute_leaf_layout(
+                    inputs,
+                    &style,
+                    |_value, _basis| 0.0,
+                    |known_dimensions, _available_space| Size {
+                        width: known_dimensions.width.unwrap_or(0.0),
+                        height: known_dimensions.height.unwrap_or(0.0),
+                    },
+                )
+            };
+
+            if inputs.run_mode == taffy::RunMode::PerformLayout {
+                compute_oof_layout(tree, node_id, &mut output);
+            }
+            output
+        })
+    }
+}
+
+impl CacheTree for NativeLayoutPass<'_> {
+    fn cache_get(&self, node_id: taffy::NodeId, inputs: &LayoutInput) -> Option<LayoutOutput> {
+        self.state(node_id).cache.get(inputs)
+    }
+
+    fn cache_store(
+        &mut self,
+        node_id: taffy::NodeId,
+        inputs: &LayoutInput,
+        output: LayoutOutput,
+    ) {
+        self.state_mut(node_id).cache.store(inputs, output);
+    }
+
+    fn cache_clear(&mut self, node_id: taffy::NodeId) {
+        self.state_mut(node_id).cache.clear();
+    }
+}
+
+impl taffy::LayoutContainingBlock for NativeLayoutPass<'_> {
+    type OofItemStyle<'b>
+        = &'b taffy::Style
+    where
+        Self: 'b;
+
+    fn get_oof_item_style(&self, node_id: taffy::NodeId) -> Self::OofItemStyle<'_> {
+        &self.state(node_id).style
+    }
+
+    fn clear_hoisted_children(&mut self, node_id: taffy::NodeId) {
+        self.state_mut(node_id).hoisted.clear();
+    }
+
+    fn add_hoisted_children(&mut self, node_id: taffy::NodeId, hoisted: &[taffy::NodeId]) {
+        self.state_mut(node_id).hoisted.extend_from_slice(hoisted);
+    }
+}
+
+impl taffy::LayoutFlexboxContainer for NativeLayoutPass<'_> {
+    type FlexboxContainerStyle<'b>
+        = &'b taffy::Style
+    where
+        Self: 'b;
+    type FlexboxItemStyle<'b>
+        = &'b taffy::Style
+    where
+        Self: 'b;
+
+    fn get_flexbox_container_style(&self, node_id: taffy::NodeId) -> Self::FlexboxContainerStyle<'_> {
+        &self.state(node_id).style
+    }
+
+    fn get_flexbox_child_style(&self, child_node_id: taffy::NodeId) -> Self::FlexboxItemStyle<'_> {
+        &self.state(child_node_id).style
+    }
+}
+
+impl taffy::RoundTree for NativeLayoutPass<'_> {
+    fn get_unrounded_layout(&self, node_id: taffy::NodeId) -> Layout {
+        self.state(node_id).unrounded
+    }
+
+    fn set_final_layout(&mut self, node_id: taffy::NodeId, layout: &Layout) {
+        self.state_mut(node_id).final_layout = *layout;
+    }
+
+    fn is_out_of_flow(&self, node_id: taffy::NodeId) -> bool {
+        self.state(node_id).style.position.is_out_of_flow()
+    }
+
+    fn hoisted_child_count(&self, node_id: taffy::NodeId) -> usize {
+        self.state(node_id).hoisted.len()
+    }
+
+    fn get_hoisted_child_id(&self, node_id: taffy::NodeId, index: usize) -> taffy::NodeId {
+        self.state(node_id).hoisted[index]
+    }
+}
+
+#[cfg(test)]
+mod compute_tests {
+    use super::*;
+    use crate::deque_tree::End;
+    use crate::runtime::ui::{InitialDeque, InitialElement, UiElement, UiModel};
+
+    fn element(tag: &str, display: &str, width: &str, height: &str) -> UiElement {
+        let mut element = UiElement::new(tag);
+        element.computed_styles = [
+            ("display".into(), display.into()),
+            ("width".into(), width.into()),
+            ("height".into(), height.into()),
+        ]
+        .into();
+        element
+    }
+
+    #[test]
+    fn flex_layout_computes_real_rectangles_from_canonical_children() {
+        let mut ui = UiModel::from_initial_groups(vec![InitialDeque {
+            handle: super::super::ui::DequeHandle(90_001),
+            elements: vec![
+                InitialElement {
+                    handle: ElementHandle(90_101),
+                    element: element("second", "block", "100px", "20px"),
+                    subtree_span: 1,
+                },
+                InitialElement {
+                    handle: ElementHandle(90_102),
+                    element: element("first", "block", "50px", "20px"),
+                    subtree_span: 1,
+                },
+                InitialElement {
+                    handle: ElementHandle(90_103),
+                    element: {
+                        let mut root = element("main", "flex", "300px", "100px");
+                        root.computed_styles.insert("flex-direction".into(), "row".into());
+                        root.computed_styles.insert("column-gap".into(), "10px".into());
+                        root
+                    },
+                    subtree_span: 3,
+                },
+            ],
+        }])
+        .unwrap();
+
+        let root = ElementHandle(90_103);
+        let first = ElementHandle(90_102);
+        let second = ElementHandle(90_101);
+        let mut pass = NativeLayoutPass::new(ui.projection()).unwrap();
+        pass.compute(root, Size { width: 300.0, height: 100.0 }).unwrap();
+
+        let root_layout = pass.layout(root).unwrap();
+        let first_layout = pass.layout(first).unwrap();
+        let second_layout = pass.layout(second).unwrap();
+
+        assert_eq!(root_layout.size.width, 300.0);
+        assert_eq!(root_layout.size.height, 100.0);
+        assert_eq!(first_layout.location.x, 0.0);
+        assert_eq!(first_layout.location.y, 0.0);
+        assert_eq!(first_layout.size.width, 50.0);
+        assert_eq!(second_layout.location.x, 60.0);
+        assert_eq!(second_layout.size.width, 100.0);
+    }
+
+    #[test]
+    fn text_nodes_are_rejected_until_text_measurement_is_connected() {
+        let mut ui = UiModel::new();
+        let root = ui.create_root_deque().unwrap();
+        let _text = ui.create_text(root, "native text", End::Back).unwrap();
+        assert!(matches!(
+            NativeLayoutPass::new(ui.projection()),
+            Err(LayoutComputeError::UnsupportedNode { reason, .. })
+                if reason.contains("text measurement")
+        ));
+    }
+}

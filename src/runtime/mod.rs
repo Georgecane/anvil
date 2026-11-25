@@ -3,6 +3,7 @@ mod ecmascript;
 mod framework;
 mod host;
 mod layout;
+mod layout_compute;
 mod renderer;
 mod style;
 mod stylo;
@@ -17,6 +18,7 @@ pub use framework::{
 };
 pub use host::HostRuntime;
 pub use layout::{LayoutNodeId, LayoutStyleError, TaffyTreeProjection, taffy_style_from_computed};
+pub use layout_compute::{LayoutComputeError, NativeLayoutPass};
 pub use renderer::{
     GpuContext, GpuInitError, NativeRenderer, RenderElement, RenderInput, render_frame,
 };
