@@ -29,6 +29,9 @@ struct ElementLayoutState {
     style: taffy::Style,
     text_content: Option<String>,
     font_size: f32,
+    font_family: String,
+    font_weight: u16,
+    font_style: String,
     line_height: f32,
     cache: Cache,
     unrounded: Layout,
@@ -42,6 +45,9 @@ impl ElementLayoutState {
             style,
             text_content: None,
             font_size: 16.0,
+            font_family: "sans-serif".into(),
+            font_weight: 400,
+            font_style: "normal".into(),
             line_height: 19.2,
             cache: Cache::new(),
             unrounded: Layout::with_order(0),
@@ -126,6 +132,19 @@ impl<'a, 'text> NativeLayoutPass<'a, 'text> {
             let mut state = ElementLayoutState::new(style);
             if element.kind == UiElementKind::Text {
                 state.text_content = Some(element.text_content().unwrap_or_default().to_owned());
+                state.font_family = computed_styles
+                    .get("font-family")
+                    .cloned()
+                    .unwrap_or_else(|| "sans-serif".into());
+                state.font_weight = computed_styles
+                    .get("font-weight")
+                    .and_then(|value| value.parse::<u16>().ok())
+                    .unwrap_or(400)
+                    .clamp(1, 1000);
+                state.font_style = computed_styles
+                    .get("font-style")
+                    .cloned()
+                    .unwrap_or_else(|| "normal".into());
                 state.font_size = computed_styles
                     .get("font-size")
                     .and_then(|value| value.strip_suffix("px"))
@@ -270,6 +289,9 @@ impl taffy::LayoutPartialTree for NativeLayoutPass<'_, '_> {
             } else {
                 let text_content = tree.state(node_id).text_content.clone();
                 let font_size = tree.state(node_id).font_size;
+                let font_family = tree.state(node_id).font_family.clone();
+                let font_weight = tree.state(node_id).font_weight;
+                let font_style = tree.state(node_id).font_style.clone();
                 let line_height = tree.state(node_id).line_height;
                 compute_leaf_layout(
                     inputs,
