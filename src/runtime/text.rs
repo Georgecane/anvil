@@ -36,9 +36,10 @@ fn font_family(value: &str) -> Family<'_> {
 /// Split a CSS font-family list without splitting commas inside quoted names.
 fn unquote_family(value: &str) -> &str {
     let value = value.trim();
-    if value.starts_with('"') && value.ends_with('"') && value.len() >= 2 {
-        &value[1..value.len() - 1]
-    } else if value.starts_with("'") && value.ends_with("'") && value.len() >= 2 {
+    if value.len() >= 2
+        && (value.starts_with('"') || value.starts_with("'"))
+        && value.as_bytes().first() == value.as_bytes().last()
+    {
         &value[1..value.len() - 1]
     } else {
         value
