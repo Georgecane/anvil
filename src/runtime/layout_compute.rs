@@ -385,7 +385,6 @@ impl taffy::RoundTree for NativeLayoutPass<'_, '_> {
 #[cfg(test)]
 mod compute_tests {
     use super::*;
-    use crate::deque_tree::End;
     use crate::runtime::ui::{InitialDeque, InitialElement, UiElement, UiModel};
 
     fn element(tag: &str, display: &str, width: &str, height: &str) -> UiElement {
@@ -490,7 +489,8 @@ mod compute_tests {
         let hidden = ElementHandle(90_202);
         let visible = ElementHandle(90_203);
         let root = ElementHandle(90_204);
-        let mut pass = NativeLayoutPass::new(ui.projection(), &mut TextSystem::new()).unwrap();
+        let mut text_system = TextSystem::new();
+        let mut pass = NativeLayoutPass::new(ui.projection(), &mut text_system).unwrap();
         pass.compute(
             root,
             Size {
