@@ -1617,7 +1617,7 @@ impl StyloStyleEngine {
         insert_css!("font-family", values.get_font().get_font_family());
         insert_css!("font-weight", values.get_font().get_font_weight());
         insert_css!("font-style", values.get_font().get_font_style());
-        insert_css!("font-stretch", values.get_font().font_stretch);
+        insert_css!("font-stretch", values.get_font().get_font_width());
         insert_css!("line-height", values.get_font().get_line_height());
         result.insert(
             "opacity".into(),
