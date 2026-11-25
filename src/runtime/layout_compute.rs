@@ -1,10 +1,10 @@
+use super::layout::{LayoutStyleError, TaffyTreeProjection, taffy_style_from_computed};
 use super::ui::{ElementHandle, LogicalProjection, UiElementKind};
-use super::layout::{taffy_style_from_computed, LayoutStyleError, TaffyTreeProjection};
 use std::collections::HashMap;
 use taffy::{
+    AvailableSpace, Cache, CacheTree, Layout, LayoutInput, LayoutOutput, Size,
     compute_cached_layout, compute_flexbox_layout, compute_leaf_layout, compute_oof_layout,
-    compute_root_layout, round_layout, AvailableSpace, Cache, CacheTree, Layout, LayoutInput,
-    LayoutOutput, Size,
+    compute_root_layout, round_layout,
 };
 
 /// A failure to construct or execute a native layout pass.
@@ -72,9 +72,8 @@ impl<'a> NativeLayoutPass<'a> {
                 });
             }
 
-            let style = taffy_style_from_computed(&element.computed_styles).map_err(|source| {
-                LayoutComputeError::InvalidStyle { handle, source }
-            })?;
+            let style = taffy_style_from_computed(&element.computed_styles)
+                .map_err(|source| LayoutComputeError::InvalidStyle { handle, source })?;
 
             let children = taffy_projection.projection().children_of(handle);
             if !children.is_empty() && style.display != taffy::Display::Flex {
@@ -138,7 +137,9 @@ impl<'a> NativeLayoutPass<'a> {
 
     fn state_mut(&mut self, node_id: taffy::NodeId) -> &mut ElementLayoutState {
         let handle = self.handle(node_id);
-        self.states.get_mut(&handle).expect("layout state exists for every projected element")
+        self.states
+            .get_mut(&handle)
+            .expect("layout state exists for every projected element")
     }
 }
 
@@ -223,12 +224,7 @@ impl CacheTree for NativeLayoutPass<'_> {
         self.state(node_id).cache.get(inputs)
     }
 
-    fn cache_store(
-        &mut self,
-        node_id: taffy::NodeId,
-        inputs: &LayoutInput,
-        output: LayoutOutput,
-    ) {
+    fn cache_store(&mut self, node_id: taffy::NodeId, inputs: &LayoutInput, output: LayoutOutput) {
         self.state_mut(node_id).cache.store(inputs, output);
     }
 
@@ -266,7 +262,10 @@ impl taffy::LayoutFlexboxContainer for NativeLayoutPass<'_> {
     where
         Self: 'b;
 
-    fn get_flexbox_container_style(&self, node_id: taffy::NodeId) -> Self::FlexboxContainerStyle<'_> {
+    fn get_flexbox_container_style(
+        &self,
+        node_id: taffy::NodeId,
+    ) -> Self::FlexboxContainerStyle<'_> {
         &self.state(node_id).style
     }
 
@@ -333,8 +332,10 @@ mod compute_tests {
                     handle: ElementHandle(90_103),
                     element: {
                         let mut root = element("main", "flex", "300px", "100px");
-                        root.computed_styles.insert("flex-direction".into(), "row".into());
-                        root.computed_styles.insert("column-gap".into(), "10px".into());
+                        root.computed_styles
+                            .insert("flex-direction".into(), "row".into());
+                        root.computed_styles
+                            .insert("column-gap".into(), "10px".into());
                         root
                     },
                     subtree_span: 3,
@@ -347,7 +348,14 @@ mod compute_tests {
         let first = ElementHandle(90_102);
         let second = ElementHandle(90_101);
         let mut pass = NativeLayoutPass::new(ui.projection()).unwrap();
-        pass.compute(root, Size { width: 300.0, height: 100.0 }).unwrap();
+        pass.compute(
+            root,
+            Size {
+                width: 300.0,
+                height: 100.0,
+            },
+        )
+        .unwrap();
 
         let root_layout = pass.layout(root).unwrap();
         let first_layout = pass.layout(first).unwrap();
