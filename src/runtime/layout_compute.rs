@@ -87,9 +87,10 @@ impl<'a, 'text> NativeLayoutPass<'a, 'text> {
             };
             let computed_styles = inherited_text_styles.unwrap_or(&element.computed_styles);
             let style = if element.kind == UiElementKind::Text {
-                let mut text_style = taffy::Style::default();
-                text_style.display = taffy::Display::Block;
-                text_style
+                taffy::Style {
+                    display: taffy::Display::Block,
+                    ..taffy::Style::default()
+                }
             } else {
                 taffy_style_from_computed(computed_styles)
                     .map_err(|source| LayoutComputeError::InvalidStyle { handle, source })?
