@@ -2034,7 +2034,10 @@ mod tests {
         let mut stylo = StyloStyleEngine::new().unwrap();
         run_style_pass(&mut stylo, &mut StyleCommitAdapter, &mut ui).unwrap();
 
-        assert_eq!(style_value(&ui, container, "font-family"), "\"DejaVu Sans\", serif");
+        assert_eq!(
+            style_value(&ui, container, "font-family"),
+            "\"DejaVu Sans\", serif"
+        );
         assert_eq!(style_value(&ui, container, "font-weight"), "650");
         assert_eq!(style_value(&ui, container, "font-style"), "oblique 12deg");
         assert_eq!(style_value(&ui, container, "line-height"), "1.75");

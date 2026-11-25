@@ -31,10 +31,7 @@ fn first_font_family(value: &str) -> &str {
         }
     }
 
-    value[..end]
-        .trim()
-        .trim_matches(['\'', '"'])
-        .trim()
+    value[..end].trim().trim_matches(['\'', '"']).trim()
 }
 
 impl TextSystem {
@@ -128,9 +125,11 @@ mod tests {
 
     #[test]
     fn first_font_family_respects_quoted_commas_and_fallback_lists() {
-        assert_eq!(first_font_family("\"Family, With Comma\", serif"), "Family, With Comma");
+        assert_eq!(
+            first_font_family("\"Family, With Comma\", serif"),
+            "Family, With Comma"
+        );
         assert_eq!(first_font_family("Arial, sans-serif"), "Arial");
         assert_eq!(first_font_family("monospace"), "monospace");
     }
 }
-
