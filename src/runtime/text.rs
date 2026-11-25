@@ -1,5 +1,13 @@
 use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, SwashCache, Weight};
 
+/// Computed font attributes passed from Stylo to native text shaping.
+#[derive(Debug, Clone, Copy)]
+pub struct FontAttributes<'a> {
+    pub family: &'a str,
+    pub weight: u16,
+    pub style: &'a str,
+}
+
 /// Shared font database and glyph raster cache used by native text layout/rendering.
 pub struct TextSystem {
     font_system: FontSystem,
@@ -60,9 +68,7 @@ impl TextSystem {
         text: &str,
         max_width: Option<f32>,
         font_size: f32,
-        font_family: &str,
-        font_weight: u16,
-        font_style: &str,
+        font: FontAttributes<'_>,
         line_height: f32,
     ) -> (f32, f32) {
         let font_size = if font_size.is_finite() && font_size > 0.0 {
@@ -77,7 +83,7 @@ impl TextSystem {
         };
         let mut buffer = Buffer::new_empty(Metrics::new(font_size, line_height));
         buffer.set_size(max_width, None);
-        let first_family = first_font_family(font_family);
+        let first_family = first_font_family(font.family);
         let family = if first_family.eq_ignore_ascii_case("serif") {
             Family::Serif
         } else if first_family.eq_ignore_ascii_case("sans-serif") {
@@ -91,16 +97,16 @@ impl TextSystem {
         } else {
             Family::Name(first_family)
         };
-        let style = if font_style.starts_with("italic") {
+        let style = if font.style.starts_with("italic") {
             Style::Italic
-        } else if font_style.starts_with("oblique") {
+        } else if font.style.starts_with("oblique") {
             Style::Oblique
         } else {
             Style::Normal
         };
         let attrs = Attrs::new()
             .family(family)
-            .weight(Weight(font_weight.clamp(1, 1000)));
+            .weight(Weight(font.weight.clamp(1, 1000)));
         let attrs = attrs.style(style);
         buffer.set_text(text, &attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(&mut self.font_system, false);
