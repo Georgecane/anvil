@@ -1,6 +1,10 @@
 use cosmic_text::{
     Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Stretch, Style, SwashCache, Weight,
 };
+use cosmic_text::fontdb::ID as FontFaceId;
+use std::collections::HashMap;
+use std::ops::Range;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Computed font attributes passed from Stylo to native text shaping.
 #[derive(Debug, Clone, Copy)]
@@ -82,25 +86,122 @@ fn font_family_candidates(value: &str) -> Vec<&str> {
     families
 }
 
-/// Select the first declared family available in the shared font database.
-/// cosmic-text remains responsible for script-aware, per-glyph system fallback.
-fn resolve_font_family<'a>(font_system: &FontSystem, value: &'a str) -> Family<'a> {
-    let candidates = font_family_candidates(value);
-    let first = candidates.first().copied().unwrap_or("sans-serif");
-
-    candidates
-        .iter()
-        .map(|candidate| font_family(candidate))
-        .find(|family| {
-            let requested = font_system.db().family_name(family);
-            font_system.db().faces().any(|face| {
-                face.families
-                    .iter()
-                    .any(|(name, _)| name.eq_ignore_ascii_case(requested))
-            })
-        })
-        .unwrap_or_else(|| font_family(first))
+/// CSS font fallback is resolved at grapheme boundaries so combining marks and
+/// joined emoji stay together while adjacent runs using the same family remain
+/// shapeable as a continuous run.
+fn is_font_coverage_ignorable(character: char) -> bool {
+    matches!(
+        character as u32,
+        0x200C..=0x200D
+            | 0xFE00..=0xFE0F
+            | 0xE0020..=0xE007F
+            | 0xE0100..=0xE01EF
+    )
 }
+
+fn select_font_family(
+    grapheme: &str,
+    family_count: usize,
+    mut supports: impl FnMut(usize, char) -> bool,
+) -> usize {
+    let characters = grapheme
+        .chars()
+        .filter(|character| !is_font_coverage_ignorable(*character))
+        .collect::<Vec<_>>();
+    let mut best_family = 0;
+    let mut best_coverage = 0;
+
+    for family_index in 0..family_count {
+        let coverage = characters
+            .iter()
+            .filter(|character| supports(family_index, **character))
+            .count();
+
+        if coverage == characters.len() {
+            return family_index;
+        }
+        if coverage > best_coverage {
+            best_coverage = coverage;
+            best_family = family_index;
+        }
+    }
+
+    best_family
+}
+
+fn font_family_spans(
+    text: &str,
+    family_count: usize,
+    mut supports: impl FnMut(usize, char) -> bool,
+) -> Vec<(Range<usize>, usize)> {
+    if text.is_empty() || family_count == 0 {
+        return Vec::new();
+    }
+
+    let mut spans = Vec::new();
+    let mut active_family = None;
+    let mut active_start = 0;
+
+    for (start, grapheme) in text.grapheme_indices(true) {
+        let family_index =
+            select_font_family(grapheme, family_count, &mut supports);
+
+        if let Some(previous_family) = active_family {
+            if previous_family != family_index {
+                spans.push((active_start..start, previous_family));
+                active_start = start;
+            }
+        } else {
+            active_start = start;
+        }
+
+        active_family = Some(family_index);
+    }
+
+    if let Some(family_index) = active_family {
+        spans.push((active_start..text.len(), family_index));
+    }
+
+    spans
+}
+
+fn font_family_faces(
+    font_system: &FontSystem,
+    families: &[Family<'_>],
+) -> Vec<Vec<FontFaceId>> {
+    families
+        .iter()
+        .map(|family| {
+            let requested_name = font_system.db().family_name(family);
+            font_system
+                .db()
+                .faces()
+                .filter(|face| {
+                    face.families
+                        .iter()
+                        .any(|(name, _)| name.eq_ignore_ascii_case(requested_name))
+                })
+                .map(|face| face.id)
+                .collect()
+        })
+        .collect()
+}
+
+fn face_supports_character(
+    font_system: &FontSystem,
+    face_id: FontFaceId,
+    character: char,
+) -> bool {
+    font_system
+        .db()
+        .with_face_data(face_id, |data, face_index| {
+            cosmic_text::skrifa::FontRef::from_index(data, face_index)
+                .ok()
+                .is_some_and(|font| font.charmap().map(character).is_some())
+        })
+        .unwrap_or(false)
+}
+
 
 fn font_stretch(value: &str) -> Stretch {
     let value = value.trim();
@@ -182,7 +283,28 @@ impl TextSystem {
         } else {
             font_size * 1.2
         };
-        let family = resolve_font_family(&self.font_system, font.family);
+        let family_names = font_family_candidates(font.family);
+        let family_names = if family_names.is_empty() {
+            vec!["sans-serif"]
+        } else {
+            family_names
+        };
+        let families = family_names
+            .iter()
+            .map(|candidate| font_family(candidate))
+            .collect::<Vec<_>>();
+        let family_faces = font_family_faces(&self.font_system, &families);
+        let mut coverage_cache = HashMap::<(FontFaceId, char), bool>::new();
+        let spans = font_family_spans(text, families.len(), |family_index, character| {
+            family_faces[family_index].iter().any(|face_id| {
+                *coverage_cache
+                    .entry((*face_id, character))
+                    .or_insert_with(|| {
+                        face_supports_character(&self.font_system, *face_id, character)
+                    })
+            })
+        });
+
         let style = if font.style.starts_with("italic") {
             Style::Italic
         } else if font.style.starts_with("oblique") {
@@ -191,13 +313,26 @@ impl TextSystem {
             Style::Normal
         };
         let attrs = Attrs::new()
-            .family(family)
+            .family(families[0])
             .weight(Weight(font.weight.clamp(1, 1000)))
             .style(style)
             .stretch(font_stretch(font.stretch));
         let mut buffer = Buffer::new_empty(Metrics::new(font_size, line_height));
         buffer.set_size(max_width, None);
-        buffer.set_text(text, &attrs, Shaping::Advanced, None);
+        if spans.is_empty() {
+            buffer.set_text(text, &attrs, Shaping::Advanced, None);
+        } else {
+            let rich_spans = spans
+                .iter()
+                .map(|(range, family_index)| {
+                    (
+                        &text[range.clone()],
+                        attrs.clone().family(families[*family_index]),
+                    )
+                })
+                .collect::<Vec<_>>();
+            buffer.set_rich_text(rich_spans, &attrs, Shaping::Advanced, None);
+        }
         buffer.shape_until_scroll(&mut self.font_system, false);
 
         let mut width: f32 = 0.0;
@@ -217,7 +352,7 @@ impl Default for TextSystem {
 
 #[cfg(test)]
 mod tests {
-    use super::{font_family_candidates, font_stretch};
+    use super::{font_family_candidates, font_family_spans, font_stretch};
     use cosmic_text::Stretch;
 
     #[test]
@@ -231,6 +366,37 @@ mod tests {
             vec!["First\\' Family", "Second, Family", "monospace"]
         );
         assert_eq!(font_family_candidates(" , , "), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn ordered_css_fallback_is_selected_per_grapheme_and_runs_are_coalesced() {
+        let spans = font_family_spans("abé", 2, |family, character| match family {
+            0 => matches!(character, 'a' | 'b'),
+            1 => matches!(character, 'b' | 'é'),
+            _ => false,
+        });
+
+        assert_eq!(spans, vec![(0..2, 0), (2..4, 1)]);
+    }
+
+    #[test]
+    fn fallback_keeps_combining_sequences_in_one_grapheme() {
+        let text = "a\\u{301}b";
+        let spans = font_family_spans(text, 2, |family, character| match family {
+            0 => character == 'a' || character == 'b',
+            1 => character == 'a' || character == '\\u{301}' || character == 'b',
+            _ => false,
+        });
+
+        assert_eq!(spans, vec![(0..text.len(), 1)]);
+    }
+
+    #[test]
+    fn fallback_prefers_earlier_family_when_coverage_is_equal() {
+        assert_eq!(
+            super::select_font_family("x", 2, |_, _| true),
+            0
+        );
     }
 
     #[test]
