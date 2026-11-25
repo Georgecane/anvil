@@ -140,7 +140,10 @@ impl<'a, 'text> NativeLayoutPass<'a, 'text> {
                         } else if let Some(px) = value.strip_suffix("px") {
                             px.trim().parse::<f32>().ok()
                         } else {
-                            value.parse::<f32>().ok().map(|scale| state.font_size * scale)
+                            value
+                                .parse::<f32>()
+                                .ok()
+                                .map(|scale| state.font_size * scale)
                         }
                     })
                     .filter(|value| value.is_finite() && *value > 0.0)
@@ -277,12 +280,9 @@ impl taffy::LayoutPartialTree for NativeLayoutPass<'_, '_> {
                                 AvailableSpace::Definite(width) => Some(width),
                                 AvailableSpace::MinContent | AvailableSpace::MaxContent => None,
                             };
-                            let (measured_width, measured_height) = tree.text_system.measure(
-                                text,
-                                max_width,
-                                font_size,
-                                line_height,
-                            );
+                            let (measured_width, measured_height) =
+                                tree.text_system
+                                    .measure(text, max_width, font_size, line_height);
                             Size {
                                 width: known_dimensions.width.unwrap_or(measured_width),
                                 height: known_dimensions.height.unwrap_or(measured_height),
@@ -529,7 +529,8 @@ mod compute_tests {
                     handle: ElementHandle(90_302),
                     element: {
                         let mut root = element("root", "flex", "300px", "100px");
-                        root.computed_styles.insert("font-size".into(), "24px".into());
+                        root.computed_styles
+                            .insert("font-size".into(), "24px".into());
                         root
                     },
                     subtree_span: 2,
