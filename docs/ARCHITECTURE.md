@@ -139,6 +139,20 @@ Layout produces derived output:
 
 A single rectangle per element is a useful initial milestone, not a universal CSS model. Inline content, fragmentation, pseudo/generated content, and anonymous boxes can create zero, one, or multiple layout objects for an element.
 
+### 6.5 Persistent layout state
+
+The Layout engine persists a stable ElementHandle-to-backend-node-ID mapping and per-element derived state across frames.
+
+- Backend IDs are monotonically assigned and never reused during an engine lifetime. Removing an element retires its mapping and leaves its ID slot vacant.
+- Per-element style inputs, text measurements, Taffy cache entries, and geometry are derived state keyed by ElementHandle.
+- The initial layout pass may enumerate the complete canonical projection once. Later passes consume independent Layout mutation and computed-style cursors.
+- Text, insert, remove, and move mutations refresh only affected subtrees and invalidate the ancestor formatting contexts they depend on.
+- Computed-style deltas are classified. Geometry-affecting values invalidate Layout; paint-only values advance the consumer cursor without forcing a layout pass.
+- A changed root or viewport invalidates the relevant root context.
+- When no layout-affecting changes occur and root/viewport are unchanged, the engine skips Taffy computation and rounding entirely.
+- Taffy traversal always reads current child relationships through LogicalProjection. The persistent index does not store parent/child lists.
+
+
 ### 6.3 Derived formatting objects
 
 Some CSS formatting behavior cannot be represented by a one-to-one mapping from UI elements to layout nodes. Examples include anonymous boxes, `display: contents`, inline formatting, and fragmented content.
@@ -182,7 +196,7 @@ Invalidation sources are distinct:
 | Device-scale change | Pixel rounding and raster/render resources; CSS-pixel geometry remains separately represented |
 | Stylesheet epoch change | Stylo's bounded recalculation schedule, followed by consumer-specific style invalidation |
 
-The mutation journal must carry enough stable identity and revision information for consumers to derive affected contexts without storing cloned sibling lists. Layout and renderer consume computed-style deltas through their own cursors or equivalent independent revision tracking.
+The mutation journal must carry enough stable identity and revision information for consumers to derive affected contexts without storing cloned sibling lists. Stylo and Layout acknowledge source UI mutations independently; entries are reclaimed only through the minimum active consumer cursor. Layout and renderer consume computed-style deltas through their own cursors or equivalent independent revision tracking.
 
 A cache is reusable only if every input that affects its result is unchanged. Cache validity must include relevant computed-style version, available space, intrinsic measurement version, and formatting-context dependencies.
 
@@ -236,7 +250,7 @@ A green CI run is necessary but not sufficient for architectural validation. A f
 The current implementation is an experimental baseline, not a reason to preserve incorrect boundaries. Rebuild in small, independently verifiable stages:
 
 1. **[Implemented foundation] Change propagation contract:** distinguish source UI mutations from computed-style deltas; give Layout and Renderer independent invalidation cursors.
-2. **Persistent derived layout state:** keep stable identity mappings and layout caches across passes; remove repeated whole-projection setup from ordinary frames.
+2. **[Implemented foundation] Persistent derived layout state:** keep stable identity mappings and layout caches across passes; remove repeated whole-projection setup from ordinary frames.
 3. **Geometry-to-render contract:** pass final geometry/fragments and computed visual state to render preparation, while keeping GPU drawing independent.
 4. **Formatting coverage:** add correct block/inline, flex, grid, positioning, intrinsic sizing, and fragment behavior as separately tested milestones.
 5. **Paint preparation:** derive stacking, clipping, transforms, hit testing, and compositing metadata from computed style and layout output.
@@ -249,7 +263,7 @@ The order may change when code inspection demonstrates a dependency, but no stag
 The following are implementation gaps observed in the current source and must be closed during reconstruction:
 
 - The computed-style journal and independent Layout/Renderer cursors are implemented, but the concrete Layout and Renderer consumers are not yet wired to acknowledge and process their deltas.
-- `NativeLayoutPass` currently builds per-pass state and a full `ElementHandle` projection; its Taffy IDs and measurement caches are not persistent across passes.
+- `NativeLayoutEngine` now persists stable Taffy ID mappings and per-element measurement/layout caches across passes. Its formatting support remains limited to the tested Flexbox/leaf milestone; Block/Inline/Grid compatibility and deeper fragmentation remain pending.
 - Current layout computation accepts flex containers with children and text/leaf nodes, but rejects non-flex containers with children. The existence of Block/Grid Taffy features does not make these modes implemented.
 - The current `RenderInput` carries elements but no layout geometry/fragments or complete prepared visual state.
 - The Winit redraw callback is currently a placeholder; the native window, layout, renderer, and surface lifecycle are not yet a complete presentation loop.

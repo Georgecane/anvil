@@ -18,7 +18,7 @@ pub use framework::{
 };
 pub use host::HostRuntime;
 pub use layout::{LayoutNodeId, LayoutStyleError, TaffyTreeProjection, taffy_style_from_computed};
-pub use layout_compute::{LayoutComputeError, NativeLayoutPass};
+pub use layout_compute::{LayoutComputeError, NativeLayoutEngine};
 pub use renderer::{
     GpuContext, GpuInitError, NativeRenderer, RenderElement, RenderInput, render_frame,
 };

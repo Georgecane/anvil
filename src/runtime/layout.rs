@@ -318,6 +318,81 @@ impl taffy::TraversePartialTree for TaffyTreeProjection<'_> {
 
 impl taffy::TraverseTree for TaffyTreeProjection<'_> {}
 
+/// Stable identity mapping for persistent derived layout nodes.
+/// Removed slots are tombstoned and never reused for a different handle.
+#[derive(Default)]
+pub(crate) struct LayoutNodeIndex {
+    handles: Vec<Option<ElementHandle>>,
+    node_ids: HashMap<ElementHandle, taffy::NodeId>,
+}
+
+impl LayoutNodeIndex {
+    pub(crate) fn new() -> Self { Self::default() }
+    pub(crate) fn insert(&mut self, handle: ElementHandle) -> Result<taffy::NodeId, ()> {
+        if let Some(node_id) = self.node_ids.get(&handle) { return Ok(*node_id); }
+        if self.handles.len() > u32::MAX as usize { return Err(()); }
+        let node_id = taffy::NodeId::from(self.handles.len());
+        self.handles.push(Some(handle));
+        self.node_ids.insert(handle, node_id);
+        Ok(node_id)
+    }
+    pub(crate) fn remove(&mut self, handle: ElementHandle) -> Option<taffy::NodeId> {
+        let node_id = self.node_ids.remove(&handle)?;
+        *self.handles.get_mut(usize::from(node_id))? = None;
+        Some(node_id)
+    }
+    pub(crate) fn node_id(&self, handle: ElementHandle) -> Option<taffy::NodeId> {
+        self.node_ids.get(&handle).copied()
+    }
+    pub(crate) fn handle(&self, node_id: taffy::NodeId) -> Option<ElementHandle> {
+        self.handles.get(usize::from(node_id)).copied().flatten()
+    }
+    pub(crate) fn len(&self) -> usize { self.node_ids.len() }
+}
+
+/// Per-pass traversal adapter. It borrows the canonical projection and
+/// persistent identity index, never storing child or parent relationships.
+pub(crate) struct PersistentTaffyTreeProjection<'projection, 'index> {
+    projection: LogicalProjection<'projection>,
+    index: &'index LayoutNodeIndex,
+}
+impl<'projection, 'index> PersistentTaffyTreeProjection<'projection, 'index> {
+    pub(crate) fn new(
+        projection: LogicalProjection<'projection>,
+        index: &'index LayoutNodeIndex,
+    ) -> Self { Self { projection, index } }
+    pub(crate) fn projection(&self) -> &LogicalProjection<'projection> { &self.projection }
+    pub(crate) fn node_id(&self, handle: ElementHandle) -> Option<LayoutNodeId> {
+        self.index.node_id(handle).map(LayoutNodeId)
+    }
+    pub(crate) fn handle_for_taffy_id(&self, node_id: taffy::NodeId) -> ElementHandle {
+        self.index.handle(node_id).expect("reachable layout node has a live ElementHandle")
+    }
+}
+
+#[cfg(test)]
+mod persistent_index_tests {
+    use super::*;
+    #[test]
+    fn persistent_ids_survive_removal_without_aliasing_later_elements() {
+        let mut index = LayoutNodeIndex::new();
+        let a = ElementHandle(70_001);
+        let b = ElementHandle(70_002);
+        let a_id = index.insert(a).unwrap();
+        let b_id = index.insert(b).unwrap();
+        assert_eq!(index.insert(a).unwrap(), a_id);
+        assert_eq!(index.handle(a_id), Some(a));
+        assert_eq!(index.handle(b_id), Some(b));
+        assert_eq!(index.remove(a), Some(a_id));
+        assert_eq!(index.handle(a_id), None);
+        let c = ElementHandle(70_003);
+        let c_id = index.insert(c).unwrap();
+        assert_ne!(c_id, a_id);
+        assert_eq!(index.handle(c_id), Some(c));
+        assert_eq!(index.len(), 2);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

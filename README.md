@@ -34,6 +34,7 @@ Its central idea is a single canonical UI hierarchy backed by a fixed-topology b
 | `runtime::renderer` | Native renderer interface, render-frame dispatch, and WGPU context. |
 | `runtime::window` | Native window and event-loop host powered by Winit. |
 | `runtime::text` | Text and font-system integration powered by cosmic-text. |
+| `runtime::layout_compute` | Persistent derived geometry and Taffy low-level traversal over the canonical Deque Tree. |
 
 These are the current building blocks, not a claim that every browser feature or framework adapter is already implemented.
 
