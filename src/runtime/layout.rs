@@ -240,14 +240,14 @@ pub fn taffy_style_from_computed(
 
 /// A temporary Taffy node index mapped to a stable canonical Anvil element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct LayoutNodeId(taffy::NodeId);
+pub struct LayoutNodeId(pub(crate) taffy::NodeId);
 
 /// Read-only Taffy traversal over the canonical Deque Tree.
 /// No TaffyTree or parallel parent/child hierarchy is constructed.
 pub struct TaffyTreeProjection<'a> {
     projection: LogicalProjection<'a>,
     handles: Vec<ElementHandle>,
-    node_ids: HashMap<ElementHandle, taffy::NodeId>,
+    pub(crate) node_ids: HashMap<ElementHandle, taffy::NodeId>,
 }
 
 impl<'a> TaffyTreeProjection<'a> {
@@ -283,7 +283,7 @@ impl<'a> TaffyTreeProjection<'a> {
         &self.projection
     }
 
-    fn handle_for_taffy_id(&self, node_id: taffy::NodeId) -> ElementHandle {
+    pub(crate) fn handle_for_taffy_id(&self, node_id: taffy::NodeId) -> ElementHandle {
         self.handles[usize::from(node_id)]
     }
 }
