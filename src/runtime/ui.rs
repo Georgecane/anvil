@@ -1463,7 +1463,10 @@ impl UiModel {
             changed.into_iter().collect::<Vec<_>>()
         };
 
-        self.computed_style_revision = self.computed_style_revision.wrapping_add(1);
+        self.computed_style_revision = self
+            .computed_style_revision
+            .checked_add(1)
+            .expect("computed-style revision exhausted");
         self.computed_style_journal.push_back(ComputedStyleChange {
             revision: self.computed_style_revision,
             element: handle,
@@ -2315,13 +2318,18 @@ mod computed_style_change_tests {
         .unwrap();
         let latest_revision = ui.computed_style_revision();
 
-        // Renderer may catch up independently; Layout's older cursor keeps
-        // both records alive until Layout consumes the second change.
+        // Renderer receives both deltas. Its acknowledgement lets the
+        // journal reclaim revision 1, while Layout still holds revision 2.
+        assert_eq!(
+            ui.computed_style_changes_for(ComputedStyleConsumer::Renderer)
+                .count(),
+            2
+        );
         ui.acknowledge_computed_style_changes(
             ComputedStyleConsumer::Renderer,
             latest_revision,
         );
-        assert_eq!(ui.computed_style_journal.len(), 2);
+        assert_eq!(ui.computed_style_journal.len(), 1);
 
         ui.acknowledge_computed_style_changes(
             ComputedStyleConsumer::Layout,
