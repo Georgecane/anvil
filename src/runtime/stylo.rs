@@ -1614,6 +1614,10 @@ impl StyloStyleEngine {
             values.get_background().get_background_color()
         );
         insert_css!("font-size", values.slow_clone_font_size());
+        insert_css!("font-family", values.get_font().get_font_family());
+        insert_css!("font-weight", values.get_font().get_font_weight());
+        insert_css!("font-style", values.get_font().get_font_style());
+        insert_css!("line-height", values.get_font().get_line_height());
         result.insert(
             "opacity".into(),
             values.get_effects().get_opacity().to_string(),
@@ -2012,6 +2016,29 @@ mod tests {
         );
         assert_eq!(style_value(&ui, button, "font-size"), "20px");
         assert_eq!(style_value(&ui, button, "opacity"), "0.5");
+    }
+
+    #[test]
+    fn computed_typography_is_serialized_from_stylo() {
+        let mut ui = UiModel::new();
+        let root = ui.create_root_deque().unwrap();
+        let text = ui.create_text(root, "Typography", End::Back).unwrap();
+        let container = ui.create_element(root, "div", End::Back).unwrap();
+        ui.set_style(container, "font-family", "\"DejaVu Sans\", serif")
+            .unwrap();
+        ui.set_style(container, "font-weight", "650").unwrap();
+        ui.set_style(container, "font-style", "oblique 12deg")
+            .unwrap();
+        ui.set_style(container, "line-height", "1.75").unwrap();
+
+        let mut stylo = StyloStyleEngine::new().unwrap();
+        run_style_pass(&mut stylo, &mut StyleCommitAdapter, &mut ui).unwrap();
+
+        assert_eq!(style_value(&ui, container, "font-family"), "\"DejaVu Sans\", serif");
+        assert_eq!(style_value(&ui, container, "font-weight"), "650");
+        assert_eq!(style_value(&ui, container, "font-style"), "oblique 12deg");
+        assert_eq!(style_value(&ui, container, "line-height"), "1.75");
+        let _ = text;
     }
 
     #[test]
