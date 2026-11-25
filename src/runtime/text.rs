@@ -19,6 +19,8 @@ pub struct FontAttributes<'a> {
 pub struct TextSystem {
     font_system: FontSystem,
     swash_cache: SwashCache,
+    font_family_faces_cache: HashMap<String, Vec<FontFaceId>>,
+    font_coverage_cache: HashMap<(FontFaceId, char), bool>,
 }
 
 fn font_family(value: &str) -> Family<'_> {
@@ -165,44 +167,6 @@ fn font_family_spans(
     spans
 }
 
-fn font_family_faces(
-    font_system: &FontSystem,
-    families: &[Family<'_>],
-) -> Vec<Vec<FontFaceId>> {
-    families
-        .iter()
-        .map(|family| {
-            let requested_name = font_system.db().family_name(family);
-            font_system
-                .db()
-                .faces()
-                .filter(|face| {
-                    face.families
-                        .iter()
-                        .any(|(name, _)| name.eq_ignore_ascii_case(requested_name))
-                })
-                .map(|face| face.id)
-                .collect()
-        })
-        .collect()
-}
-
-fn face_supports_character(
-    font_system: &FontSystem,
-    face_id: FontFaceId,
-    character: char,
-) -> bool {
-    font_system
-        .db()
-        .with_face_data(face_id, |data, face_index| {
-            cosmic_text::skrifa::FontRef::from_index(data, face_index)
-                .ok()
-                .is_some_and(|font| font.charmap().map(character).is_some())
-        })
-        .unwrap_or(false)
-}
-
-
 fn font_stretch(value: &str) -> Stretch {
     let value = value.trim();
     let percentage = value
@@ -249,13 +213,65 @@ impl TextSystem {
         Self {
             font_system: FontSystem::new(),
             swash_cache: SwashCache::new(),
+            font_family_faces_cache: HashMap::new(),
+            font_coverage_cache: HashMap::new(),
         }
     }
     pub fn font_system(&self) -> &FontSystem {
         &self.font_system
     }
     pub fn font_system_mut(&mut self) -> &mut FontSystem {
+        self.font_family_faces_cache.clear();
+        self.font_coverage_cache.clear();
         &mut self.font_system
+    }
+    fn family_face_ids(&mut self, families: &[Family<'_>]) -> Vec<Vec<FontFaceId>> {
+        families
+            .iter()
+            .map(|family| {
+                let requested_name = self.font_system.db().family_name(family).to_owned();
+                let cache_key = requested_name.to_ascii_lowercase();
+                if let Some(face_ids) = self.font_family_faces_cache.get(&cache_key) {
+                    return face_ids.clone();
+                }
+
+                let face_ids = self
+                    .font_system
+                    .db()
+                    .faces()
+                    .filter(|face| {
+                        face.families
+                            .iter()
+                            .any(|(name, _)| name.eq_ignore_ascii_case(&requested_name))
+                    })
+                    .map(|face| face.id)
+                    .collect::<Vec<_>>();
+                self.font_family_faces_cache
+                    .insert(cache_key, face_ids.clone());
+                face_ids
+            })
+            .collect()
+    }
+    fn face_supports_character(&mut self, face_id: FontFaceId, character: char) -> bool {
+        if let Some(supported) = self.font_coverage_cache.get(&(face_id, character)) {
+            return *supported;
+        }
+        if self.font_coverage_cache.len() >= 32_768 {
+            self.font_coverage_cache.clear();
+        }
+
+        let supported = self
+            .font_system
+            .db()
+            .with_face_data(face_id, |data, face_index| {
+                cosmic_text::skrifa::FontRef::from_index(data, face_index)
+                    .ok()
+                    .is_some_and(|font| font.charmap().map(character).is_some())
+            })
+            .unwrap_or(false);
+        self.font_coverage_cache
+            .insert((face_id, character), supported);
+        supported
     }
     pub fn swash_cache(&self) -> &SwashCache {
         &self.swash_cache
@@ -293,16 +309,11 @@ impl TextSystem {
             .iter()
             .map(|candidate| font_family(candidate))
             .collect::<Vec<_>>();
-        let family_faces = font_family_faces(&self.font_system, &families);
-        let mut coverage_cache = HashMap::<(FontFaceId, char), bool>::new();
+        let family_faces = self.family_face_ids(&families);
         let spans = font_family_spans(text, families.len(), |family_index, character| {
-            family_faces[family_index].iter().any(|face_id| {
-                *coverage_cache
-                    .entry((*face_id, character))
-                    .or_insert_with(|| {
-                        face_supports_character(&self.font_system, *face_id, character)
-                    })
-            })
+            family_faces[family_index]
+                .iter()
+                .any(|face_id| self.face_supports_character(*face_id, character))
         });
 
         let style = if font.style.starts_with("italic") {
