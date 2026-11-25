@@ -34,6 +34,17 @@ fn font_family(value: &str) -> Family<'_> {
 }
 
 /// Split a CSS font-family list without splitting commas inside quoted names.
+fn unquote_family(value: &str) -> &str {
+    let value = value.trim();
+    if value.starts_with('"') && value.ends_with('"') && value.len() >= 2 {
+        &value[1..value.len() - 1]
+    } else if value.starts_with("'") && value.ends_with("'") && value.len() >= 2 {
+        &value[1..value.len() - 1]
+    } else {
+        value
+    }
+}
+
 fn font_family_candidates(value: &str) -> Vec<&str> {
     let mut families = Vec::new();
     let mut quote = None;
@@ -53,7 +64,7 @@ fn font_family_candidates(value: &str) -> Vec<&str> {
             (Some(active), current) if active == current => quote = None,
             (None, '\'' | '"') => quote = Some(character),
             (None, ',') => {
-                let family = value[start..index].trim().trim_matches(['\\'', '"']).trim();
+                let family = unquote_family(&value[start..index]).trim();
                 if !family.is_empty() {
                     families.push(family);
                 }
@@ -63,7 +74,7 @@ fn font_family_candidates(value: &str) -> Vec<&str> {
         }
     }
 
-    let family = value[start..].trim().trim_matches(['\\'', '"']).trim();
+    let family = unquote_family(&value[start..]).trim();
     if !family.is_empty() {
         families.push(family);
     }
