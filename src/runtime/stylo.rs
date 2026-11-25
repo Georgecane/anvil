@@ -1558,11 +1558,20 @@ impl StyloStyleEngine {
         // Flexbox inputs are read from Stylo's computed Position and
         // InheritedBox structs. This remains serialization only; layout is
         // computed later by the native layout adapter.
-        insert_css!("direction", values.get_inherited_box().slow_clone_direction());
-        insert_css!("flex-direction", values.get_position().slow_clone_flex_direction());
+        insert_css!(
+            "direction",
+            values.get_inherited_box().slow_clone_direction()
+        );
+        insert_css!(
+            "flex-direction",
+            values.get_position().slow_clone_flex_direction()
+        );
         insert_css!("flex-wrap", values.get_position().slow_clone_flex_wrap());
         insert_css!("flex-grow", values.get_position().slow_clone_flex_grow());
-        insert_css!("flex-shrink", values.get_position().slow_clone_flex_shrink());
+        insert_css!(
+            "flex-shrink",
+            values.get_position().slow_clone_flex_shrink()
+        );
         insert_css!("flex-basis", values.get_position().slow_clone_flex_basis());
         insert_css!("row-gap", values.get_position().slow_clone_row_gap());
         insert_css!("column-gap", values.get_position().slow_clone_column_gap());
