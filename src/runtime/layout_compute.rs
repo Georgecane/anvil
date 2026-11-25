@@ -86,7 +86,7 @@ impl<'a, 'text> NativeLayoutPass<'a, 'text> {
                 None
             };
             let computed_styles = inherited_text_styles.unwrap_or(&element.computed_styles);
-            let mut style = if element.kind == UiElementKind::Text {
+            let style = if element.kind == UiElementKind::Text {
                 let mut text_style = taffy::Style::default();
                 text_style.display = taffy::Display::Block;
                 text_style
@@ -433,7 +433,8 @@ mod compute_tests {
         let root = ElementHandle(90_103);
         let first = ElementHandle(90_102);
         let second = ElementHandle(90_101);
-        let mut pass = NativeLayoutPass::new(ui.projection(), &mut TextSystem::new()).unwrap();
+        let mut text_system = TextSystem::new();
+        let mut pass = NativeLayoutPass::new(ui.projection(), &mut text_system).unwrap();
         pass.compute(
             root,
             Size {
