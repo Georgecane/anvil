@@ -237,6 +237,19 @@ impl<'a> LogicalProjection<'a> {
     pub(crate) fn mutation_revision(&self) -> u64 {
         self.model.mutation_revision
     }
+    pub(crate) fn computed_style_revision(&self) -> u64 {
+        self.model.computed_style_revision
+    }
+    pub(crate) fn computed_style_changes_for(
+        &self,
+        consumer: ComputedStyleConsumer,
+    ) -> impl Iterator<Item = &ComputedStyleChange> {
+        let revision = self.model.computed_style_cursors[consumer.index()];
+        self.model
+            .computed_style_journal
+            .iter()
+            .filter(move |change| change.revision > revision)
+    }
     pub(crate) fn mutations_since(&self, revision: u64) -> impl Iterator<Item = &UiMutation> {
         self.model
             .mutation_journal
@@ -304,6 +317,7 @@ pub struct UiModel {
     topology_sealed: bool,
     mutation_revision: u64,
     acknowledged_mutation_revision: u64,
+    layout_mutation_cursor: Option<u64>,
     mutation_journal: VecDeque<UiMutation>,
     computed_style_revision: u64,
     computed_style_cursors: [u64; 2],
@@ -392,6 +406,7 @@ impl UiModel {
             topology_sealed: true,
             mutation_revision: 0,
             acknowledged_mutation_revision: 0,
+            layout_mutation_cursor: None,
             mutation_journal: VecDeque::new(),
             computed_style_revision: 0,
             computed_style_cursors: [0; 2],
@@ -413,6 +428,7 @@ impl UiModel {
             topology_sealed: false,
             mutation_revision: 0,
             acknowledged_mutation_revision: 0,
+            layout_mutation_cursor: None,
             mutation_journal: VecDeque::new(),
             computed_style_revision: 0,
             computed_style_cursors: [0; 2],
@@ -589,12 +605,39 @@ impl UiModel {
         });
     }
 
+    /// Stylo is the source-mutation consumer. Layout registers independently
+    /// when it takes its first complete snapshot.
     pub(crate) fn acknowledge_mutations(&mut self, revision: u64) {
-        self.acknowledged_mutation_revision = self.acknowledged_mutation_revision.max(revision);
+        self.acknowledged_mutation_revision =
+            self.acknowledged_mutation_revision.max(revision.min(self.mutation_revision));
+        self.prune_mutation_journal();
+    }
+
+    /// Register Layout after it has established a complete derived-state
+    /// snapshot. Historical mutations are already represented by that snapshot.
+    pub(crate) fn register_layout_mutation_consumer(&mut self) {
+        self.layout_mutation_cursor = Some(self.mutation_revision);
+        self.prune_mutation_journal();
+    }
+
+    /// Acknowledge only the source mutations incorporated by Layout.
+    pub(crate) fn acknowledge_layout_mutations(&mut self, revision: u64) {
+        if let Some(cursor) = self.layout_mutation_cursor.as_mut() {
+            *cursor = (*cursor).max(revision.min(self.mutation_revision));
+            self.prune_mutation_journal();
+        }
+    }
+
+    fn prune_mutation_journal(&mut self) {
+        let acknowledged = self
+            .layout_mutation_cursor
+            .map_or(self.acknowledged_mutation_revision, |layout| {
+                self.acknowledged_mutation_revision.min(layout)
+            });
         while self
             .mutation_journal
             .front()
-            .is_some_and(|mutation| mutation.revision <= self.acknowledged_mutation_revision)
+            .is_some_and(|mutation| mutation.revision <= acknowledged)
         {
             self.mutation_journal.pop_front();
         }
@@ -2222,6 +2265,49 @@ mod ghost_revival_tests {
                 .deque()
                 .is_ghost()
         );
+    }
+}
+
+#[cfg(test)]
+mod mutation_consumer_tests {
+    use super::*;
+
+    #[test]
+    fn stylo_acknowledgement_does_not_discard_mutations_before_layout_consumes_them() {
+        let mut ui = UiModel::new();
+        let root = ui.create_root_deque().unwrap();
+        let element = ui.create_element(root, "div", End::Back).unwrap();
+        let layout_cursor_before_registration = ui.layout_mutation_cursor;
+        assert_eq!(layout_cursor_before_registration, None);
+
+        ui.register_layout_mutation_consumer();
+        let registered_at = ui.mutation_revision();
+        ui.set_style(element, "width", "100px").unwrap();
+        let mutation_revision = ui.mutation_revision();
+
+        // Stylo can advance first, but the independent Layout cursor retains
+        // the source mutation until Layout has observed it.
+        ui.acknowledge_mutations(mutation_revision);
+        assert_eq!(ui.mutation_journal.len(), 1);
+        assert_eq!(
+            ui.mutation_journal.front().unwrap().revision,
+            mutation_revision
+        );
+
+        ui.acknowledge_layout_mutations(mutation_revision);
+        assert!(ui.mutation_journal.is_empty());
+        assert!(ui.layout_mutation_cursor.unwrap() >= registered_at);
+    }
+
+    #[test]
+    fn mutation_journal_keeps_legacy_stylo_pruning_when_layout_is_not_registered() {
+        let mut ui = UiModel::new();
+        let root = ui.create_root_deque().unwrap();
+        let element = ui.create_element(root, "div", End::Back).unwrap();
+        ui.set_style(element, "width", "100px").unwrap();
+        let revision = ui.mutation_revision();
+        ui.acknowledge_mutations(revision);
+        assert!(ui.mutation_journal.is_empty());
     }
 }
 
