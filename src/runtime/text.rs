@@ -1,10 +1,42 @@
-use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache};
+use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, SwashCache, Weight};
 
 /// Shared font database and glyph raster cache used by native text layout/rendering.
 pub struct TextSystem {
     font_system: FontSystem,
     swash_cache: SwashCache,
 }
+fn first_font_family(value: &str) -> &str {
+    let value = value.trim();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut end = value.len();
+
+    for (index, character) in value.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if character == '\\' {
+            escaped = true;
+            continue;
+        }
+        match (quote, character) {
+            (Some(active), current) if active == current => quote = None,
+            (None, '\'' | '"') => quote = Some(character),
+            (None, ',') => {
+                end = index;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    value[..end]
+        .trim()
+        .trim_matches(['\'', '"'])
+        .trim()
+}
+
 impl TextSystem {
     pub fn new() -> Self {
         Self {
@@ -31,6 +63,9 @@ impl TextSystem {
         text: &str,
         max_width: Option<f32>,
         font_size: f32,
+        font_family: &str,
+        font_weight: u16,
+        font_style: &str,
         line_height: f32,
     ) -> (f32, f32) {
         let font_size = if font_size.is_finite() && font_size > 0.0 {
@@ -45,7 +80,27 @@ impl TextSystem {
         };
         let mut buffer = Buffer::new_empty(Metrics::new(font_size, line_height));
         buffer.set_size(max_width, None);
-        buffer.set_text(text, &Attrs::new(), Shaping::Advanced, None);
+        let first_family = first_font_family(font_family);
+        let family = match first_family.to_ascii_lowercase().as_str() {
+            "serif" => Family::Serif,
+            "sans-serif" => Family::SansSerif,
+            "monospace" => Family::Monospace,
+            "cursive" => Family::Cursive,
+            "fantasy" => Family::Fantasy,
+            name => Family::Name(name),
+        };
+        let style = if font_style.starts_with("italic") {
+            Style::Italic
+        } else if font_style.starts_with("oblique") {
+            Style::Oblique
+        } else {
+            Style::Normal
+        };
+        let attrs = Attrs::new()
+            .family(family)
+            .weight(Weight(font_weight.clamp(1, 1000)));
+        let attrs = attrs.style(style);
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
         let mut width: f32 = 0.0;
