@@ -39,6 +39,9 @@ These are the current building blocks, not a claim that every browser feature or
 
 ## Architecture
 
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the normative ownership rules, subsystem boundaries, incremental invalidation model, Layout contract, and reconstruction sequence.
+
+
 ### Canonical hierarchy
 
 The Deque Tree is the sole owner of UI elements. Each Deque stores an ordered sequence of entries and parallel subtree-span metadata. Structural relationships are derived from those spans and the Deque Tree topology rather than from a duplicated `children` list on every element.
