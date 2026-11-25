@@ -94,6 +94,15 @@ fn computed_value<'a>(
     properties.get(property).map(String::as_str)
 }
 
+fn parse_nonnegative(value: &str, property: &'static str) -> Result<f32, LayoutStyleError> {
+    let parsed = parse_numeric(value.trim(), property)?;
+    if parsed >= 0.0 {
+        Ok(parsed)
+    } else {
+        Err(invalid(property, value))
+    }
+}
+
 /// Translate Stylo's computed snapshot into Taffy's input style. This does not
 /// parse declarations, cascade rules, or resolve CSS. Values are expected to
 /// be computed CSS px, percentages, or supported keywords. Calc expressions
@@ -128,6 +137,45 @@ pub fn taffy_style_from_computed(
             "sticky" => taffy::Position::Sticky,
             _ => return Err(unsupported("position", value)),
         };
+    }
+    if let Some(value) = computed_value(properties, "direction") {
+        style.direction = match value {
+            "ltr" => taffy::Direction::Ltr,
+            "rtl" => taffy::Direction::Rtl,
+            _ => return Err(unsupported("direction", value)),
+        };
+    }
+    if let Some(value) = computed_value(properties, "flex-direction") {
+        style.flex_direction = match value {
+            "row" => taffy::FlexDirection::Row,
+            "row-reverse" => taffy::FlexDirection::RowReverse,
+            "column" => taffy::FlexDirection::Column,
+            "column-reverse" => taffy::FlexDirection::ColumnReverse,
+            _ => return Err(unsupported("flex-direction", value)),
+        };
+    }
+    if let Some(value) = computed_value(properties, "flex-wrap") {
+        style.flex_wrap = match value {
+            "nowrap" => taffy::FlexWrap::NoWrap,
+            "wrap" => taffy::FlexWrap::Wrap,
+            "wrap-reverse" => taffy::FlexWrap::WrapReverse,
+            _ => return Err(unsupported("flex-wrap", value)),
+        };
+    }
+    if let Some(value) = computed_value(properties, "flex-grow") {
+        style.flex_grow = parse_nonnegative(value, "flex-grow")?;
+    }
+    if let Some(value) = computed_value(properties, "flex-shrink") {
+        style.flex_shrink = parse_nonnegative(value, "flex-shrink")?;
+    }
+    if let Some(value) = computed_value(properties, "flex-basis") {
+        style.flex_basis = parse_dimension(value, "flex-basis")?;
+    }
+    if let Some(value) = computed_value(properties, "row-gap") {
+        style.gap.height = parse_length_percentage(value, "row-gap")?;
+    }
+    if let Some(value) = computed_value(properties, "column-gap") {
+        style.gap.width = parse_length_percentage(value, "column-gap")?;
     }
     for (property, target) in [
         ("width", &mut style.size.width),
@@ -306,6 +354,44 @@ mod tests {
         assert_eq!(style.padding.top, taffy::LengthPercentage::length(8.0));
         assert_eq!(style.border.left, taffy::LengthPercentage::length(2.0));
         assert_eq!(style.inset.left, taffy::LengthPercentageAuto::percent(0.1));
+    }
+
+    #[test]
+    fn computed_flex_css_maps_to_taffy_without_losing_axes_or_gaps() {
+        let properties = BTreeMap::from([
+            ("display".into(), "flex".into()),
+            ("direction".into(), "rtl".into()),
+            ("flex-direction".into(), "row-reverse".into()),
+            ("flex-wrap".into(), "wrap-reverse".into()),
+            ("flex-grow".into(), "2.5".into()),
+            ("flex-shrink".into(), "0.25".into()),
+            ("flex-basis".into(), "35%".into()),
+            ("row-gap".into(), "12px".into()),
+            ("column-gap".into(), "4%".into()),
+        ]);
+        let style = taffy_style_from_computed(&properties).unwrap();
+        assert_eq!(style.direction, taffy::Direction::Rtl);
+        assert_eq!(style.flex_direction, taffy::FlexDirection::RowReverse);
+        assert_eq!(style.flex_wrap, taffy::FlexWrap::WrapReverse);
+        assert_eq!(style.flex_grow, 2.5);
+        assert_eq!(style.flex_shrink, 0.25);
+        assert_eq!(style.flex_basis, taffy::Dimension::percent(0.35));
+        assert_eq!(style.gap.height, taffy::LengthPercentage::length(12.0));
+        assert_eq!(style.gap.width, taffy::LengthPercentage::percent(0.04));
+    }
+
+    #[test]
+    fn computed_flex_factors_reject_negative_and_non_finite_values() {
+        for value in ["-1", "NaN", "inf"] {
+            let properties = BTreeMap::from([("flex-grow".into(), value.into())]);
+            assert!(matches!(
+                taffy_style_from_computed(&properties),
+                Err(LayoutStyleError::InvalidValue {
+                    property: "flex-grow",
+                    ..
+                })
+            ));
+        }
     }
 
     #[test]
