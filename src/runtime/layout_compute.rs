@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use taffy::{
     AvailableSpace, Cache, CacheTree, Layout, LayoutInput, LayoutOutput, Size,
     compute_cached_layout, compute_flexbox_layout, compute_leaf_layout, compute_oof_layout,
-    compute_root_layout, round_layout,
+    compute_hidden_layout, compute_root_layout, round_layout,
 };
 
 /// A failure to construct or execute a native layout pass.
@@ -76,16 +76,27 @@ impl<'a> NativeLayoutPass<'a> {
                 .map_err(|source| LayoutComputeError::InvalidStyle { handle, source })?;
 
             let children = taffy_projection.projection().children_of(handle);
-            if !children.is_empty() && style.display != taffy::Display::Flex {
+            let mut hidden_by_ancestor = false;
+            let mut ancestor = taffy_projection.projection().parent_of(handle);
+            while let Some(parent) = ancestor {
+                if states
+                    .get(&parent)
+                    .is_some_and(|state: &ElementLayoutState| state.style.display == taffy::Display::None)
+                {
+                    hidden_by_ancestor = true;
+                    break;
+                }
+                ancestor = taffy_projection.projection().parent_of(parent);
+            }
+
+            if !children.is_empty()
+                && style.display != taffy::Display::Flex
+                && style.display != taffy::Display::None
+                && !hidden_by_ancestor
+            {
                 return Err(LayoutComputeError::UnsupportedNode {
                     handle,
                     reason: "only flex containers may have children in this layout milestone",
-                });
-            }
-            if style.display == taffy::Display::None {
-                return Err(LayoutComputeError::UnsupportedNode {
-                    handle,
-                    reason: "display:none hidden-layout handling is not connected yet",
                 });
             }
 
@@ -195,6 +206,12 @@ impl taffy::LayoutPartialTree for NativeLayoutPass<'_> {
         node_id: taffy::NodeId,
         inputs: LayoutInput,
     ) -> LayoutOutput {
+        if inputs.run_mode == taffy::RunMode::PerformHiddenLayout
+            || self.state(node_id).style.display == taffy::Display::None
+        {
+            return compute_hidden_layout(self, node_id);
+        }
+
         compute_cached_layout(self, node_id, inputs, |tree, node_id, inputs| {
             let style = tree.state(node_id).style.clone();
             let mut output = if style.display == taffy::Display::Flex {
@@ -368,6 +385,64 @@ mod compute_tests {
         assert_eq!(first_layout.size.width, 50.0);
         assert_eq!(second_layout.location.x, 60.0);
         assert_eq!(second_layout.size.width, 100.0);
+    }
+
+    #[test]
+    fn display_none_hides_the_entire_canonical_subtree_without_affecting_flex_siblings() {
+        let mut ui = UiModel::from_initial_groups(vec![InitialDeque {
+            handle: super::super::ui::DequeHandle(90_002),
+            elements: vec![
+                InitialElement {
+                    handle: ElementHandle(90_201),
+                    element: element("descendant", "block", "80px", "20px"),
+                    subtree_span: 1,
+                },
+                InitialElement {
+                    handle: ElementHandle(90_202),
+                    element: element("hidden", "none", "100px", "40px"),
+                    subtree_span: 2,
+                },
+                InitialElement {
+                    handle: ElementHandle(90_203),
+                    element: element("visible", "block", "50px", "20px"),
+                    subtree_span: 1,
+                },
+                InitialElement {
+                    handle: ElementHandle(90_204),
+                    element: element("root", "flex", "300px", "100px"),
+                    subtree_span: 4,
+                },
+            ],
+        }])
+        .unwrap();
+
+        let descendant = ElementHandle(90_201);
+        let hidden = ElementHandle(90_202);
+        let visible = ElementHandle(90_203);
+        let root = ElementHandle(90_204);
+        let mut pass = NativeLayoutPass::new(ui.projection()).unwrap();
+        pass.compute(
+            root,
+            Size {
+                width: 300.0,
+                height: 100.0,
+            },
+        )
+        .unwrap();
+
+        for handle in [hidden, descendant] {
+            let layout = pass.layout(handle).unwrap();
+            assert_eq!(layout.size.width, 0.0);
+            assert_eq!(layout.size.height, 0.0);
+            assert_eq!(layout.location.x, 0.0);
+            assert_eq!(layout.location.y, 0.0);
+        }
+
+        let visible_layout = pass.layout(visible).unwrap();
+        assert_eq!(visible_layout.location.x, 0.0);
+        assert_eq!(visible_layout.location.y, 0.0);
+        assert_eq!(visible_layout.size.width, 50.0);
+        assert_eq!(visible_layout.size.height, 20.0);
     }
 
     #[test]
