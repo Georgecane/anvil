@@ -89,6 +89,7 @@ dependencies = [
  "boa_engine",
  "cosmic-text",
  "cssparser",
+ "unicode-segmentation",
  "euclid",
  "selectors",
  "stylo",
