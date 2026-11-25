@@ -32,6 +32,7 @@ struct ElementLayoutState {
     font_family: String,
     font_weight: u16,
     font_style: String,
+    font_stretch: String,
     line_height: f32,
     cache: Cache,
     unrounded: Layout,
@@ -48,6 +49,7 @@ impl ElementLayoutState {
             font_family: "sans-serif".into(),
             font_weight: 400,
             font_style: "normal".into(),
+            font_stretch: "100%".into(),
             line_height: 19.2,
             cache: Cache::new(),
             unrounded: Layout::with_order(0),
@@ -145,6 +147,10 @@ impl<'a, 'text> NativeLayoutPass<'a, 'text> {
                     .get("font-style")
                     .cloned()
                     .unwrap_or_else(|| "normal".into());
+                state.font_stretch = computed_styles
+                    .get("font-stretch")
+                    .cloned()
+                    .unwrap_or_else(|| "100%".into());
                 state.font_size = computed_styles
                     .get("font-size")
                     .and_then(|value| value.strip_suffix("px"))
@@ -292,6 +298,7 @@ impl taffy::LayoutPartialTree for NativeLayoutPass<'_, '_> {
                 let font_family = tree.state(node_id).font_family.clone();
                 let font_weight = tree.state(node_id).font_weight;
                 let font_style = tree.state(node_id).font_style.clone();
+                let font_stretch = tree.state(node_id).font_stretch.clone();
                 let line_height = tree.state(node_id).line_height;
                 compute_leaf_layout(
                     inputs,
@@ -311,6 +318,7 @@ impl taffy::LayoutPartialTree for NativeLayoutPass<'_, '_> {
                                     family: &font_family,
                                     weight: font_weight,
                                     style: &font_style,
+                                    stretch: &font_stretch,
                                 },
                                 line_height,
                             );
